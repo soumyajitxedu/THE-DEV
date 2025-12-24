@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Butterfly Heaven - Advanced Audio Interface</title>
+    <style>
+        @import url("https://fonts.cdnfonts.com/css/thegoodmonolith");
+
+        /* Butterfly Heaven Theme Color Palette */
+        :root {
+            --bg-color: #F5F3FF;
+            --text-primary: #4C3A5A;
+            --text-secondary: #7B6D8D;
+            --accent-primary: #A076F9;
+            --accent-secondary: #FD8BC3;
+            --accent-tertiary: #FDEBF7;
+            --panel-bg: rgba(245, 240, 255, 0.65);
+            --panel-border: rgba(160, 118, 249, 0.3);
+            --panel-highlight: rgba(160, 118, 249, 0.15);
+            --meter-bg: rgba(0, 0, 0, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: "TheGoodMonolith", monospace;
+            overflow: hidden;
+            height: 100vh;
+            text-transform: uppercase;
+            font-size: 12px;
+        }
+
+        /* LAYOUT & CONTAINERS */
+        .space-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-size: cover;
+            background-position: center;
+            z-index: 0;
+            opacity: 0.5;
+            transition: background-image 0.5s ease-in-out, opacity 0.3s;
+        }
+
+        #three-container {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        .grid-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image:
+                linear-gradient(to right, var(--panel-border) 1px, transparent 1px),
+                linear-gradient(to bottom, var(--panel-border) 1px, transparent 1px);
+            background-size: 60px 60px;
+            pointer-events: none;
+            z-index: 1;
+            opacity: 0.2;
+        }
+
+        /* UI PANELS */
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            padding: 12px;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05);
+            pointer-events: auto;
+            position: absolute;
+            z-index: 10;
+            transition: border-color 0.3s;
+        }
+        
+        .panel:hover {
+            border-color: var(--accent-primary);
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            border-bottom: 1px solid var(--panel-border);
+            padding-bottom: 5px;
+            color: var(--accent-primary);
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+
+        .drag-handle {
+            cursor: move;
+            opacity: 0.6;
+        }
+
+        /* CONTROLS */
+        button {
+            font-family: inherit;
+            background: var(--panel-highlight);
+            border: 1px solid var(--panel-border);
+            color: var(--accent-primary);
+            padding: 6px 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-radius: 4px;
+            font-size: 10px;
+            text-transform: uppercase;
+        }
+
+        button:hover {
+            background: var(--accent-primary);
+            color: #fff;
+            box-shadow: 0 0 10px var(--accent-primary);
+        }
+
+        button.active {
+            background: var(--accent-secondary);
+            color: #fff;
+            border-color: var(--accent-secondary);
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            background: rgba(0,0,0,0.1);
+            border-radius: 2px;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--accent-primary);
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        /* STEREO METERS */
+        .stereo-container {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            height: 60vh;
+            width: 20px;
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .stereo-left { left: 30px; }
+        .stereo-right { right: 30px; }
+
+        .meter-label {
+            font-size: 10px;
+            color: var(--accent-primary);
+            writing-mode: vertical-rl;
+            transform: rotate(180deg);
+            margin-bottom: 5px;
+        }
+
+        .meter-bar-bg {
+            width: 6px;
+            height: 100%;
+            background: var(--meter-bg);
+            border-radius: 3px;
+            position: relative;
+            overflow: hidden;
+            border: 1px solid var(--panel-border);
+        }
+
+        .meter-fill {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 0%;
+            background: linear-gradient(to top, var(--accent-primary), var(--accent-secondary));
+            transition: height 0.1s ease-out;
+            box-shadow: 0 0 10px var(--accent-primary);
+        }
+
+        /* VISUALIZERS */
+        .center-visualizer {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 600px;
+            height: 600px;
+            pointer-events: none;
+            z-index: 2;
+        }
+
+        /* STATS GRID */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            font-size: 10px;
+        }
+        
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            padding: 2px 0;
+        }
+        
+        .stat-value {
+            color: var(--accent-secondary);
+            font-weight: bold;
+        }
+
+        /* TOP HEADER */
+        .header {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            z-index: 20;
+            pointer-events: none;
+        }
+        
+        .header div {
+            pointer-events: auto;
+        }
+
+        /* LOADING */
+        .loader {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: var(--bg-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            flex-direction: column;
+            transition: opacity 0.8s;
+        }
+        
+        .loader-text {
+            margin-top: 20px;
+            letter-spacing: 5px;
+            animation: blink 1.5s infinite;
+            color: var(--accent-primary);
+        }
+
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+        /* NOTIFICATION */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--text-primary);
+            color: var(--bg-color);
+            padding: 8px 20px;
+            border-radius: 20px;
+            z-index: 100;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+
+        /* CUSTOM SCROLLBAR */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--accent-primary); border-radius: 2px; }
+
+    </style>
+</head>
+
+<body>
+
+    <!-- BACKGROUNDS -->
+    <div class="space-background"></div>
+    <div class="grid-overlay"></div>
+    
+    <!-- 3D SCENE -->
+    <div id="three-container"></div>
+
+    <!-- CENTER VISUALIZER (CANVAS) -->
+    <div class="center-visualizer">
+        <canvas id="main-canvas"></canvas>
+    </div>
+
+    <!-- STEREO METERS -->
+    <div class="stereo-container stereo-left">
+        <div class="meter-bar-bg">
+            <div class="meter-fill" id="meter-l"></div>
+        </div>
+        <div class="meter-label">LEFT CHANNEL</div>
+    </div>
+
+    <div class="stereo-container stereo-right">
+        <div class="meter-bar-bg">
+            <div class="meter-fill" id="meter-r"></div>
+        </div>
+        <div class="meter-label">RIGHT CHANNEL</div>
+    </div>
+
+    <!-- HEADER -->
+    <div class="header">
+        <div style="text-align: left;">
+            <h1 style="font-size: 1.2rem; color: var(--accent-primary);">BUTTERFLY.HEAVEN</h1>
+            <span style="color: var(--text-secondary);">AUDIO VISUALIZATION ENGINE v2.0</span>
+        </div>
+        <div style="text-align: right;">
+            <div id="clock">00:00:00</div>
+            <div style="font-size: 0.8em; color: var(--accent-secondary);" id="fps-counter">60 FPS</div>
+        </div>
+    </div>
+
+    <!-- LOADING SCREEN -->
+    <div class="loader" id="loader">
+        <svg width="50" height="50" viewBox="0 0 50 50">
+            <circle cx="25" cy="25" r="20" fill="none" stroke="var(--accent-primary)" stroke-width="2" stroke-dasharray="30 10">
+                <animateTransform attributeName="transform" type="rotate" from="0 25 25" to="360 25 25" dur="1s" repeatCount="indefinite"/>
+            </circle>
+        </svg>
+        <div class="loader-text">INITIALIZING SYSTEM</div>
+    </div>
+
+    <!-- NOTIFICATION TOAST -->
+    <div class="toast" id="toast">Notification</div>
+
+    <!-- PANEL: CONTROLS -->
+    <div class="panel" style="top: 80px; left: 60px; width: 280px;">
+        <div class="panel-header">
+            <span>AUDIO CONTROL</span>
+            <span class="drag-handle">:::</span>
+        </div>
+        
+        <!-- Playback Controls -->
+        <div style="display: flex; gap: 5px; margin-bottom: 15px;">
+            <button id="btn-play" style="flex:1;">PLAY / PAUSE</button>
+            <button id="btn-loop" style="width: 40px;">∞</button>
+        </div>
+
+        <!-- Volume -->
+        <div style="margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span>MASTER GAIN</span>
+                <span id="vol-val" style="color: var(--accent-primary);">80%</span>
+            </div>
+            <input type="range" id="vol-slider" min="0" max="100" value="80">
+        </div>
+
+        <!-- Source Selection -->
+        <div style="margin-bottom: 10px; border-top: 1px solid var(--panel-border); padding-top: 10px;">
+            <span style="display: block; margin-bottom: 8px; color: var(--text-secondary);">SOURCE SELECTION</span>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+                <button class="track-btn" data-url="https://assets.codepen.io/7558/Merkaba.mp3">MERKABA</button>
+                <button class="track-btn" data-url="https://assets.codepen.io/7558/Dhamika.mp3">DHAMIKA</button>
+                <button class="track-btn" data-url="https://assets.codepen.io/7558/Vacant.mp3">VACANT</button>
+                <button id="btn-upload">UPLOAD FILE</button>
+            </div>
+            <input type="file" id="file-input" accept="audio/*" style="display: none;">
+        </div>
+    </div>
+
+    <!-- PANEL: STATS -->
+    <div class="panel" style="top: 80px; right: 60px; width: 250px;">
+        <div class="panel-header">
+            <span>REALTIME METRICS</span>
+            <span class="drag-handle">:::</span>
+        </div>
+        <div class="stats-grid">
+            <div class="stat-item"><span>BPM EST.</span><span class="stat-value" id="stat-bpm">--</span></div>
+            <div class="stat-item"><span>PEAK DB</span><span class="stat-value" id="stat-db">-inf</span></div>
+            <div class="stat-item"><span>HERTZ PEAK</span><span class="stat-value" id="stat-hz">0 Hz</span></div>
+            <div class="stat-item"><span>STEREO SEP.</span><span class="stat-value" id="stat-sep">0%</span></div>
+            <div class="stat-item"><span>TIME</span><span class="stat-value" id="stat-time">0:00</span></div>
+            <div class="stat-item"><span>STATUS</span><span class="stat-value" id="stat-status" style="color: #0f0;">READY</span></div>
+        </div>
+        <div style="margin-top: 10px; height: 60px;">
+             <canvas id="waveform-mini" width="220" height="60"></canvas>
+        </div>
+    </div>
+
+    <!-- PANEL: SPECTRUM / SOUND AREA -->
+    <div class="panel" style="bottom: 30px; left: 50%; transform: translateX(-50%); width: 600px; height: 160px;">
+        <div class="panel-header">
+            <span>FREQUENCY MAP (SPECTROGRAM)</span>
+            <span class="drag-handle">:::</span>
+        </div>
+        <canvas id="spectrogram" width="570" height="110" style="width: 100%; height: 110px; border-radius: 4px; background: rgba(0,0,0,0.2);"></canvas>
+    </div>
+
+    <!-- PANEL: THEME -->
+    <div class="panel" style="bottom: 30px; right: 60px; width: 200px;">
+        <div class="panel-header">
+            <span>THEME</span>
+            <span class="drag-handle">:::</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+            <button class="theme-btn active" data-theme="heaven">HEAVEN</button>
+            <button class="theme-btn" data-theme="neon">NEON</button>
+            <button class="theme-btn" data-theme="dark">VOID</button>
+            <button class="theme-btn" data-theme="gold">GOLD</button>
+        </div>
+        <div style="margin-top: 10px;">
+            <span>SENSITIVITY</span>
+            <input type="range" id="sens-slider" min="1" max="20" value="10" style="margin-top: 5px;">
+        </div>
+    </div>
+
+
+    <!-- SCRIPTS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.11.5/gsap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.11.5/Draggable.min.js"></script>
+
+    <script type="module">
+        import * as THREE from "https://esm.sh/three@0.175.0";
+        import { OrbitControls } from "https://esm.sh/three@0.175.0/examples/jsm/controls/OrbitControls.js";
+
+        // --- CONFIGURATION & STATE ---
+        const config = {
+            fftSize: 2048,
+            smoothing: 0.8,
+            sensitivity: 2.0
+        };
+
+        let state = {
+            isPlaying: false,
+            audioContext: null,
+            sourceNode: null,
+            analyserL: null,
+            analyserR: null,
+            gainNode: null,
+            splitter: null,
+            dataArrayL: null,
+            dataArrayR: null,
+            bpm: 0,
+            loop: false,
+            startTime: 0,
+            theme: 'heaven'
+        };
+
+        let audioElement = new Audio();
+        audioElement.crossOrigin = "anonymous";
+
+        // --- DOM ELEMENTS ---
+        const loader = document.getElementById('loader');
+        const toast = document.getElementById('toast');
+        const meterL = document.getElementById('meter-l');
+        const meterR = document.getElementById('meter-r');
+        const mainCanvas = document.getElementById('main-canvas');
+        const ctxMain = mainCanvas.getContext('2d');
+        const specCanvas = document.getElementById('spectrogram');
+        const ctxSpec = specCanvas.getContext('2d', { willReadFrequently: true });
+        const waveCanvas = document.getElementById('waveform-mini');
+        const ctxWave = waveCanvas.getContext('2d');
+
+        // --- INITIALIZATION ---
+        window.addEventListener('DOMContentLoaded', () => {
+            // Setup Dragging
+            Draggable.create(".panel", {
+                type: "x,y",
+                bounds: "body",
+                handle: ".drag-handle",
+                inertia: true,
+                edgeResistance: 0.65
+            });
+
+            initThree();
+            resizeCanvases();
+            
+            setTimeout(() => {
+                loader.style.opacity = 0;
+                setTimeout(() => loader.style.display = 'none', 800);
+            }, 1500);
+
+            requestAnimationFrame(renderLoop);
+        });
+
+        window.addEventListener('resize', () => {
+            resizeCanvases();
+            onWindowResizeThree();
+        });
+
+        function resizeCanvases() {
+            mainCanvas.width = mainCanvas.offsetWidth;
+            mainCanvas.height = mainCanvas.offsetHeight;
+            // Spectrogram handled by fixed width, stretched by CSS
+        }
+
+        function showToast(msg) {
+            toast.textContent = msg;
+            toast.style.opacity = 1;
+            setTimeout(() => toast.style.opacity = 0, 2500);
+        }
+
+        // --- AUDIO ENGINE ---
+        function initAudioContext() {
+            if (state.audioContext) return;
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            state.audioContext = new AudioContext();
+            
+            // Create Nodes
+            state.analyserL = state.audioContext.createAnalyser();
+            state.analyserR = state.audioContext.createAnalyser();
+            state.analyserL.fftSize = config.fftSize;
+            state.analyserR.fftSize = config.fftSize;
+            state.analyserL.smoothingTimeConstant = config.smoothing;
+            state.analyserR.smoothingTimeConstant = config.smoothing;
+
+            state.splitter = state.audioContext.createChannelSplitter(2);
+            state.merger = state.audioContext.createChannelMerger(2);
+            state.gainNode = state.audioContext.createGain();
+            state.gainNode.gain.value = 0.8;
+
+            // Connect Graph
+            // Note: We connect media element later
+            
+            // Buffers
+            state.dataArrayL = new Uint8Array(state.analyserL.frequencyBinCount);
+            state.dataArrayR = new Uint8Array(state.analyserR.frequencyBinCount);
+            state.waveArrayL = new Uint8Array(state.analyserL.frequencyBinCount);
+        }
+
+        function loadTrack(url) {
+            initAudioContext();
+            if(state.audioContext.state === 'suspended') state.audioContext.resume();
+
+            state.isPlaying = false;
+            document.getElementById('btn-play').textContent = "LOADING...";
+            document.getElementById('stat-status').textContent = "LOADING";
+            document.getElementById('stat-status').style.color = "#ff0";
+
+            audioElement.src = url;
+            
+            // Setup Node Chain if not already done
+            if (!state.sourceNode) {
+                state.sourceNode = state.audioContext.createMediaElementSource(audioElement);
+                
+                // Source -> Splitter -> Analysers
+                state.sourceNode.connect(state.splitter);
+                state.splitter.connect(state.analyserL, 0);
+                state.splitter.connect(state.analyserR, 1);
+
+                // Splitter -> Merger -> Gain -> Destination (So we can hear it stereo)
+                state.splitter.connect(state.merger, 0, 0);
+                state.splitter.connect(state.merger, 1, 1);
+                state.merger.connect(state.gainNode);
+                state.gainNode.connect(state.audioContext.destination);
+            }
+
+            audioElement.onloadeddata = () => {
+                playAudio();
+                showToast("Track Loaded");
+            };
+
+            audioElement.onerror = () => {
+                showToast("Error Loading Audio");
+                document.getElementById('btn-play').textContent = "PLAY";
+            };
+        }
+
+        function playAudio() {
+            if(!state.audioContext) initAudioContext();
+            state.audioContext.resume().then(() => {
+                audioElement.play().then(() => {
+                    state.isPlaying = true;
+                    document.getElementById('btn-play').textContent = "PAUSE";
+                    document.getElementById('stat-status').textContent = "PLAYING";
+                    document.getElementById('stat-status').style.color = "#0f0";
+                    animateCamera(true);
+                }).catch(e => console.log(e));
+            });
+        }
+
+        function pauseAudio() {
+            audioElement.pause();
+            state.isPlaying = false;
+            document.getElementById('btn-play').textContent = "PLAY";
+            document.getElementById('stat-status').textContent = "PAUSED";
+            document.getElementById('stat-status').style.color = "#fa0";
+            animateCamera(false);
+        }
+
+        function togglePlay() {
+            if (state.isPlaying) pauseAudio();
+            else playAudio();
+        }
+
+        // --- UI CONTROLS LOGIC ---
+        document.getElementById('btn-play').addEventListener('click', togglePlay);
+        
+        document.getElementById('btn-loop').addEventListener('click', (e) => {
+            state.loop = !state.loop;
+            audioElement.loop = state.loop;
+            e.target.classList.toggle('active');
+            showToast(state.loop ? "Loop Enabled" : "Loop Disabled");
+        });
+
+        document.getElementById('vol-slider').addEventListener('input', (e) => {
+            const val = e.target.value;
+            document.getElementById('vol-val').textContent = val + "%";
+            if(state.gainNode) state.gainNode.gain.value = val / 100;
+        });
+
+        document.getElementById('sens-slider').addEventListener('input', (e) => {
+            config.sensitivity = e.target.value / 5;
+        });
+
+        document.querySelectorAll('.track-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.track-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                loadTrack(e.target.dataset.url);
+            });
+        });
+
+        document.getElementById('btn-upload').addEventListener('click', () => {
+            document.getElementById('file-input').click();
+        });
+
+        document.getElementById('file-input').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                loadTrack(url);
+                showToast("File Uploaded: " + file.name.substring(0, 20) + "...");
+            }
+        });
+
+        // --- THEME LOGIC ---
+        const themes = {
+            heaven: { bg: '#F5F3FF', prim: '#A076F9', sec: '#FD8BC3', panel: 'rgba(245, 240, 255, 0.65)' },
+            neon:   { bg: '#050505', prim: '#00FF9F', sec: '#FF00FF', panel: 'rgba(10, 10, 20, 0.75)' },
+            dark:   { bg: '#111111', prim: '#7E57C2', sec: '#666666', panel: 'rgba(30, 30, 30, 0.75)' },
+            gold:   { bg: '#0a0a0a', prim: '#FFD700', sec: '#DAA520', panel: 'rgba(20, 20, 10, 0.75)' }
+        };
+
+        document.querySelectorAll('.theme-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                const t = themes[e.target.dataset.theme];
+                const r = document.documentElement.style;
+                r.setProperty('--bg-color', t.bg);
+                r.setProperty('--accent-primary', t.prim);
+                r.setProperty('--accent-secondary', t.sec);
+                r.setProperty('--panel-bg', t.panel);
+                
+                // Update Three.js lights/particles
+                updateThreeTheme(new THREE.Color(t.prim), new THREE.Color(t.sec));
+                showToast("Theme: " + e.target.dataset.theme.toUpperCase());
+            });
+        });
+
+        // --- THREE.JS VISUALS ---
+        let scene, camera, renderer, controls, particles, sphereGroup;
+        let particleUniforms;
+        const clock = new THREE.Clock();
+
+        function initThree() {
+            const container = document.getElementById('three-container');
+            scene = new THREE.Scene();
+            // Fog matches bg color
+            scene.fog = new THREE.FogExp2(0xF5F3FF, 0.02);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 20;
+
+            renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.5;
+            controls.enableZoom = false;
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+
+            // Central Object (The "Heaven Core")
+            sphereGroup = new THREE.Group();
+            const geo = new THREE.IcosahedronGeometry(3, 2);
+            const mat = new THREE.MeshBasicMaterial({ 
+                color: 0xA076F9, 
+                wireframe: true, 
+                transparent: true, 
+                opacity: 0.3 
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            sphereGroup.add(mesh);
+
+            // Inner Glow
+            const glowGeo = new THREE.SphereGeometry(2, 32, 32);
+            const glowMat = new THREE.MeshBasicMaterial({
+                color: 0xFD8BC3,
+                transparent: true,
+                opacity: 0.1,
+                blending: THREE.AdditiveBlending
+            });
+            sphereGroup.add(new THREE.Mesh(glowGeo, glowMat));
+            
+            scene.add(sphereGroup);
+
+            // Particles (Butterflies/Fireflies)
+            const pGeo = new THREE.BufferGeometry();
+            const count = 2000;
+            const pos = new Float32Array(count * 3);
+            const scales = new Float32Array(count);
+            const randomness = new Float32Array(count * 3);
+
+            for(let i=0; i<count; i++){
+                pos[i*3] = (Math.random() - 0.5) * 60;
+                pos[i*3+1] = (Math.random() - 0.5) * 60;
+                pos[i*3+2] = (Math.random() - 0.5) * 60;
+                scales[i] = Math.random();
+                randomness[i*3] = Math.random(); // Phase offset
+                randomness[i*3+1] = Math.random(); // Speed
+                randomness[i*3+2] = Math.random(); // Amp
+            }
+
+            pGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            pGeo.setAttribute('scale', new THREE.BufferAttribute(scales, 1));
+            pGeo.setAttribute('randomness', new THREE.BufferAttribute(randomness, 3));
+
+            particleUniforms = {
+                time: { value: 0 },
+                color1: { value: new THREE.Color(0xA076F9) },
+                color2: { value: new THREE.Color(0xFD8BC3) },
+                beat: { value: 0 }
+            };
+
+            const pMat = new THREE.ShaderMaterial({
+                uniforms: particleUniforms,
+                vertexShader: `
+                    attribute float scale;
+                    attribute vec3 randomness;
+                    uniform float time;
+                    uniform float beat;
+                    varying vec3 vColor;
+                    uniform vec3 color1;
+                    uniform vec3 color2;
+
+                    void main() {
+                        vec3 p = position;
+                        
+                        // Butterfly motion
+                        float t = time * (0.5 + randomness.y);
+                        p.y += sin(t + randomness.x * 10.0) * (0.5 + beat);
+                        p.x += cos(t * 0.8 + randomness.z * 10.0) * 0.5;
+                        p.z += sin(t * 0.3) * 0.5;
+
+                        // Expansion on beat
+                        vec3 dir = normalize(p);
+                        p += dir * beat * 2.0 * randomness.z;
+
+                        vec4 mvPosition = modelViewMatrix * vec4( p, 1.0 );
+                        gl_PointSize = scale * ( 300.0 / - mvPosition.z ) * (1.0 + beat * 0.5);
+                        gl_Position = projectionMatrix * mvPosition;
+
+                        vColor = mix(color1, color2, randomness.x);
+                    }
+                `,
+                fragmentShader: `
+                    varying vec3 vColor;
+                    void main() {
+                        if ( length( gl_PointCoord - vec2( 0.5, 0.5 ) ) > 0.475 ) discard;
+                        gl_FragColor = vec4( vColor, 0.6 );
+                    }
+                `,
+                transparent: true,
+                blending: THREE.AdditiveBlending
+            });
+
+            particles = new THREE.Points(pGeo, pMat);
+            scene.add(particles);
+        }
+
+        function updateThreeTheme(c1, c2) {
+            particleUniforms.color1.value = c1;
+            particleUniforms.color2.value = c2;
+            scene.fog.color.set(getComputedStyle(document.body).getPropertyValue('--bg-color').trim());
+            sphereGroup.children[0].material.color = c1;
+            sphereGroup.children[1].material.color = c2;
+        }
+
+        function onWindowResizeThree() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animateCamera(isActive) {
+            gsap.to(camera.position, {
+                z: isActive ? 12 : 20,
+                duration: 2,
+                ease: "power2.inOut"
+            });
+            controls.autoRotateSpeed = isActive ? 2.0 : 0.5;
+        }
+
+        // --- RENDER LOOP ---
+        function renderLoop() {
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            // Update Clock DOM
+            const now = new Date();
+            document.getElementById('clock').innerText = now.toLocaleTimeString();
+
+            let avgFreq = 0;
+            let maxVol = 0;
+
+            // 1. PROCESS AUDIO DATA
+            if (state.isPlaying && state.analyserL) {
+                state.analyserL.getByteFrequencyData(state.dataArrayL);
+                state.analyserR.getByteFrequencyData(state.dataArrayR);
+                state.analyserL.getByteTimeDomainData(state.waveArrayL);
+
+                // Calculate Stats
+                let sumL = 0, sumR = 0;
+                let peakFreq = 0, peakVal = 0;
+
+                for (let i = 0; i < state.dataArrayL.length; i++) {
+                    sumL += state.dataArrayL[i];
+                    sumR += state.dataArrayR[i];
+                    if(state.dataArrayL[i] > peakVal) {
+                        peakVal = state.dataArrayL[i];
+                        peakFreq = i;
+                    }
+                }
+                
+                const volL = sumL / state.dataArrayL.length;
+                const volR = sumR / state.dataArrayR.length;
+                maxVol = Math.max(volL, volR);
+                avgFreq = maxVol; // Normalized 0-255 roughly
+
+                // Update DOM Meters
+                meterL.style.height = `${Math.min(100, (volL / 255) * 100 * config.sensitivity)}%`;
+                meterR.style.height = `${Math.min(100, (volR / 255) * 100 * config.sensitivity)}%`;
+                
+                // Stats
+                document.getElementById('stat-db').innerText = (20 * Math.log10(maxVol/255)).toFixed(1) + " dB";
+                document.getElementById('stat-hz').innerText = Math.round(peakFreq * state.audioContext.sampleRate / state.analyserL.fftSize) + " Hz";
+                document.getElementById('stat-time').innerText = formatTime(audioElement.currentTime);
+                
+                // Fake BPM (Simple peak count simulation for visuals)
+                if (maxVol > 140) state.bpm = 120 + Math.random()*5; 
+                document.getElementById('stat-bpm').innerText = Math.round(state.bpm);
+                
+                // Stereo Separation Calc
+                let diff = Math.abs(volL - volR);
+                document.getElementById('stat-sep').innerText = Math.round((diff/255)*100) + "%";
+
+                // Update 3D Uniforms
+                particleUniforms.beat.value = THREE.MathUtils.lerp(particleUniforms.beat.value, (maxVol/255), 0.1);
+                
+                // Scale Center Sphere
+                const s = 1 + (maxVol/255) * 0.5;
+                sphereGroup.scale.set(s, s, s);
+                sphereGroup.rotation.z += 0.005;
+                sphereGroup.rotation.x += 0.005;
+
+                // 2D VISUALIZERS
+                drawMainVisualizer(state.dataArrayL, state.dataArrayR);
+                drawSpectrogram(state.dataArrayL);
+                drawWaveformMini(state.waveArrayL);
+
+            } else {
+                // Idle Animation
+                meterL.style.height = "2%";
+                meterR.style.height = "2%";
+                particleUniforms.beat.value *= 0.95;
+                sphereGroup.rotation.y += 0.002;
+            }
+
+            particleUniforms.time.value = time;
+            controls.update();
+            renderer.render(scene, camera);
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        // --- 2D DRAWING FUNCTIONS ---
+
+        function drawMainVisualizer(dataL, dataR) {
+            const w = mainCanvas.width;
+            const h = mainCanvas.height;
+            const cx = w / 2;
+            const cy = h / 2;
+            const radius = 100;
+
+            ctxMain.clearRect(0, 0, w, h);
+
+            // Get styles
+            const style = getComputedStyle(document.body);
+            const colPrim = style.getPropertyValue('--accent-primary').trim();
+            const colSec = style.getPropertyValue('--accent-secondary').trim();
+
+            ctxMain.lineWidth = 2;
+            ctxMain.lineCap = 'round';
+
+            // Left Channel (Top half/Left side mapping)
+            ctxMain.beginPath();
+            for (let i = 0; i < dataL.length/2; i+=4) { // optimized
+                const v = dataL[i] / 255.0;
+                const angle = (i / (dataL.length/2)) * Math.PI * 2; // Full circle mapping
+                
+                // Modify radius based on sound
+                const r = radius + (v * 100 * config.sensitivity);
+                
+                const x = cx + Math.cos(angle) * r;
+                const y = cy + Math.sin(angle) * r;
+
+                if (i === 0) ctxMain.moveTo(x, y);
+                else ctxMain.lineTo(x, y);
+            }
+            ctxMain.closePath();
+            ctxMain.strokeStyle = colPrim;
+            ctxMain.shadowBlur = 10;
+            ctxMain.shadowColor = colPrim;
+            ctxMain.stroke();
+            ctxMain.shadowBlur = 0; // Reset
+
+            // Inner Circle (Right Channel)
+            ctxMain.beginPath();
+            for (let i = 0; i < dataR.length/2; i+=4) {
+                const v = dataR[i] / 255.0;
+                const angle = - (i / (dataR.length/2)) * Math.PI * 2;
+                const r = (radius * 0.6) + (v * 60 * config.sensitivity);
+                const x = cx + Math.cos(angle) * r;
+                const y = cy + Math.sin(angle) * r;
+                if (i === 0) ctxMain.moveTo(x, y);
+                else ctxMain.lineTo(x, y);
+            }
+            ctxMain.closePath();
+            ctxMain.strokeStyle = colSec;
+            ctxMain.stroke();
+        }
+
+        function drawSpectrogram(data) {
+            // Scroll existing canvas content to the left
+            const w = specCanvas.width;
+            const h = specCanvas.height;
+            
+            // Draw image of itself shifted 2px left
+            ctxSpec.drawImage(specCanvas, -2, 0);
+
+            // Draw new column at right edge
+            for (let i = 0; i < h; i++) {
+                // Map y position to frequency index (logarithmic roughly or linear)
+                const dataIndex = Math.floor(((h - i) / h) * (data.length / 2));
+                const val = data[dataIndex];
+                
+                // Color map based on intensity
+                const hue = 260 - (val / 255 * 60); // Purple range
+                const light = val / 255 * 50 + 10;
+                
+                ctxSpec.fillStyle = `hsl(${hue}, 80%, ${light}%)`;
+                ctxSpec.fillRect(w - 2, i, 2, 1);
+            }
+        }
+
+        function drawWaveformMini(data) {
+            const w = waveCanvas.width;
+            const h = waveCanvas.height;
+            ctxWave.clearRect(0, 0, w, h);
+            
+            ctxWave.lineWidth = 1;
+            ctxWave.strokeStyle = getComputedStyle(document.body).getPropertyValue('--accent-secondary');
+            ctxWave.beginPath();
+            
+            const sliceWidth = w * 1.0 / data.length;
+            let x = 0;
+            
+            for(let i = 0; i < data.length; i++) {
+                const v = data[i] / 128.0;
+                const y = v * h/2;
+                
+                if(i === 0) ctxWave.moveTo(x, y);
+                else ctxWave.lineTo(x, y);
+                x += sliceWidth;
+            }
+            ctxWave.stroke();
+        }
+
+        function formatTime(s) {
+            const m = Math.floor(s / 60);
+            const sec = Math.floor(s % 60);
+            return `${m}:${sec.toString().padStart(2, '0')}`;
+        }
+
+    </script>
+</body>
+
+</html>
