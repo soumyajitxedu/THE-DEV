@@ -1,5 +1,8 @@
 import cv2
 
+# Introduction to OpenCV
+# This is a beginner starter file and is not fully explored yet.
+
 img = cv2.imread(r"C:\Users\maina\OneDrive\Pictures\Screenshots\Screenshot 2026-06-16 205729.png", cv2.IMREAD_COLOR)
 
 if img is None:
