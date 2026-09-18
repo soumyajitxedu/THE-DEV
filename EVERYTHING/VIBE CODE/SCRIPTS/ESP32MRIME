@@ -1,0 +1,1966 @@
+// ============================================================
+//  NEON OS v3.0 — SIMPLE UPDATE
+//  ESP32 + SSD1306 128x64 + 5 buttons
+// ============================================================
+
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Preferences.h>
+
+#define SCREEN_W 128
+#define SCREEN_H 64
+#define OLED_ADDR 0x3C
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+#define BTN_UP     32
+#define BTN_DOWN   33
+#define BTN_LEFT   25
+#define BTN_RIGHT  26
+#define BTN_SELECT 27
+
+const uint8_t BTN_PINS[5] = {BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_SELECT};
+const unsigned long DEBOUNCE_MS   = 40;
+const unsigned long LONG_PRESS_MS = 1200;
+
+#define ARR_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
+
+// ============================================================
+//  TYPES
+// ============================================================
+enum Act { A_NONE, A_UP, A_DOWN, A_LEFT, A_RIGHT, A_SELECT, A_BACK, A_ALT };
+
+struct Btn {
+  bool stable = HIGH;
+  bool lastRead = HIGH;
+  unsigned long lastChange = 0;
+  unsigned long pressStart = 0;
+  bool longFired = false;
+  bool shortPressed = false;
+  bool longPressed = false;
+};
+
+struct Settings {
+  uint8_t  brightness = 3;
+  uint32_t menuTimeoutMs = 20000;
+  bool     wallpaperOnBoot = true;
+  bool     screenFlip = false;
+};
+
+Adafruit_SSD1306 display(SCREEN_W, SCREEN_H, &Wire, -1);
+Preferences prefs;
+
+Btn btn[5];
+Settings cfg;
+unsigned long lastActivity = 0;
+
+// ============================================================
+//  SAFE STRING HELPERS
+// ============================================================
+static void pgmCopyTrunc(char* dest, size_t destSize, const char* pgmSrc) {
+  if (destSize == 0) return;
+  strncpy_P(dest, pgmSrc, destSize - 1);
+  dest[destSize - 1] = 0;
+}
+
+static int wrapText(const char* src, char out[][24], int maxLines, int maxCols) {
+  int line = 0, col = 0;
+  out[0][0] = 0;
+  const char* p = src;
+  int wrapAt   = maxCols - 3;
+  int softWrap = maxCols - 6;
+
+  while (*p && line < maxLines) {
+    if (col >= wrapAt || *p == '\n') {
+      out[line][col] = 0;
+      line++;
+      col = 0;
+      if (*p == '\n') p++;
+      if (line < maxLines) out[line][0] = 0;
+      continue;
+    }
+    if (col > 0 && *p == ' ' && *(p + 1) && col >= softWrap) {
+      out[line][col] = 0;
+      line++;
+      col = 0;
+      if (line < maxLines) out[line][0] = 0;
+      p++;
+      continue;
+    }
+    out[line][col++] = *p++;
+  }
+  if (line < maxLines) {
+    out[line][col] = 0;
+    line++;
+  }
+  return line;
+}
+
+// ============================================================
+//  VAULT DATA
+// ============================================================
+struct Quote {
+  const char* category;
+  const char* author;
+  const char* text;
+};
+
+const Quote VAULT_QUOTES[] PROGMEM = {
+  {"DSMP", "ParrotX2",
+   "I'm not smarter than you. I'm not... this prison, the only reason "
+   "it's perfect is because of that exact reason. Both of us know-you "
+   "will deny it, but both of us know that there's some version of you "
+   "deep down that wishes that you hadn't done this, that wishes that "
+   "you hadn't faked your death, and that wishes that you didn't "
+   "manipulate my friends and kill them and do all these things to me. "
+   "You know that you're staring at me right now, 'cause you know that "
+   "I don't want to do this. I really don't."},
+
+  {"DSMP", "Wifies",
+   "Please... please give that to me before you hurt yourself."},
+
+  {"DSMP", "Wifies",
+   "A hero would sacrifice you for the world, but a villain would "
+   "sacrifice the world for you."},
+
+  {"DSMP", "ClownPierce",
+   "I'm not a villain because I want to be. "
+   "I'm a villain because this server forces me to be."},
+
+  {"VINLAND", "Thors Snorresson",
+   "You have no enemies. No one in this world is your enemy. "
+   "There is no one that you need to hurt."},
+
+  {"BLADE", "Freysa",
+   "Dying for the right cause. It's the most human thing we can do."},
+
+  {"AOT", "Erwin Smith",
+   "It's us who gives meaning to our comrades' lives! The brave fallen! "
+   "The helpless fallen! The only ones who can remember them are us, "
+   "the living! We die here trusting the living who follow to find "
+   "meaning in our lives! That is the sole method in which we can "
+   "rebel against this cruel world!"},
+
+  {"AOT", "Attack on Titan",
+   "If you win, you live. If you lose, you die. "
+   "If you don't fight, you can't win! Fight! Fight!"},
+
+  {"GOT", "Tyrion Lannister",
+   "Never forget what you are. The rest of the world will not. "
+   "Wear it like armor, and it can never be used to hurt you."},
+
+  {"GOT", "Maester Aemon",
+   "Kill the boy, Jon Snow. Winter is almost upon us. "
+   "Kill the boy and let the man be born."},
+
+  {"INTERSTELLAR", "Dr. Brand",
+   "Love is the one thing we're capable of perceiving that transcends "
+   "dimensions of time and space. Maybe we should trust that, even if "
+   "we can't understand it yet."},
+
+  {"BATMAN", "Harvey Dent",
+   "You either die a hero, or you live long enough to see yourself "
+   "become the villain."},
+
+  {"LEGENDS", "Soumyajit Das",
+   "The quiet mind builds the loudest things. Focus in silence, "
+   "create in chaos."},
+};
+
+#define VAULT_COUNT (sizeof(VAULT_QUOTES) / sizeof(Quote))
+
+const char PROFILE_TEXT[] PROGMEM =
+  "SOUMYAJIT DAS\n"
+  "Student | Class 10\n"
+  "West Bengal, India\n"
+  "---\n"
+  "FOCUS AREAS\n"
+  "* AI & Computer Science\n"
+  "* Electronics & Hardware\n"
+  "* Digital Media & Motion\n"
+  "* Software Development\n"
+  "---\n"
+  "TOOLS\n"
+  "ESP32 - Arduino - Blender\n"
+  "DaVinci Resolve\n"
+  "Alight Motion - GitHub";
+
+// ============================================================
+//  WALLPAPER BITMAP
+// ============================================================
+const unsigned char WALLPAPER_BMP[] PROGMEM = {
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x0f,0xff,0xff,0xf8,0x00,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xff,0xff,0xff,0xff,0xe0,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0x1f,0xff,0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xe0,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x07,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,0x00,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x07,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x80,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x0f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xe0,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x1f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xf8,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x00,0x7f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x03,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x00,0x00,
+  0x00,0x00,0x00,0x00,0x07,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x80,0x00,
+  0x00,0x00,0x00,0x00,0x0f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x80,0x00,
+  0x00,0x00,0x00,0x00,0x1f,0xef,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xc0,0x00,
+  0x00,0x00,0x00,0x00,0x3f,0xdf,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xe0,0x00,
+  0x00,0x00,0x00,0x00,0x7d,0xff,0xff,0xff,0xff,0xc7,0xff,0xff,0xff,0xff,0xe0,0x00,
+  0x00,0x00,0x00,0x00,0x7f,0x3f,0xff,0xff,0xff,0x83,0xff,0xff,0xff,0xff,0xe0,0x00,
+  0x00,0x00,0x00,0x00,0xfe,0x7f,0xff,0xff,0xff,0x01,0xff,0xff,0xff,0xff,0xe0,0x00,
+  0x00,0x00,0x00,0x01,0x9d,0xfd,0xff,0xff,0xff,0x01,0xff,0xff,0xff,0xff,0xe0,0x00,
+  0x00,0x00,0x00,0x01,0x84,0xff,0xff,0x7f,0xfe,0x03,0xff,0xff,0xff,0xff,0xe0,0x00,
+  0x00,0x00,0x00,0x03,0xe3,0x7f,0xfe,0xff,0xf7,0x0f,0xff,0xff,0xff,0xff,0xe0,0x00,
+  0x00,0x00,0x00,0x03,0xf8,0xff,0xff,0xff,0x7f,0x9f,0xff,0xff,0xff,0xff,0xc0,0x00,
+  0x00,0x00,0x00,0x07,0xfe,0xff,0xf7,0xfe,0xff,0xff,0xff,0xff,0xff,0xff,0xc0,0x00,
+  0x00,0x00,0x00,0x0f,0xff,0xff,0xf7,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xc0,0x00,
+  0x00,0x00,0x00,0x0f,0xff,0xff,0xff,0xa7,0xff,0xff,0xff,0xff,0xff,0xff,0xc0,0x00,
+  0x00,0x00,0x00,0x1f,0xff,0xff,0xff,0x59,0xff,0xff,0xff,0xff,0xff,0xff,0x80,0x00,
+  0x00,0x00,0x00,0x1f,0xff,0xff,0xfe,0xb7,0xff,0xbf,0xff,0xff,0xff,0xff,0x80,0x00,
+  0x00,0x00,0x00,0x3f,0xff,0xff,0xe0,0x4f,0xff,0xff,0xff,0xff,0xff,0xff,0x00,0x00,
+  0x00,0x00,0x00,0x7f,0xff,0xff,0xfc,0x0f,0xff,0xff,0xff,0xff,0xff,0xff,0x00,0x00,
+  0x00,0x00,0x00,0x7f,0xff,0xff,0xff,0x87,0xff,0xff,0xff,0xff,0xff,0xff,0x00,0x00,
+  0x00,0x00,0x00,0x7f,0xff,0xff,0xff,0xe3,0xff,0xff,0xff,0xff,0xff,0xfe,0x00,0x00,
+  0x00,0x00,0x00,0x7f,0xff,0xff,0xff,0xf8,0x7f,0xff,0xff,0xff,0xff,0xfe,0x00,0x00,
+  0x00,0x00,0x00,0x7f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,0x00,0x00,
+  0x00,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x9f,0xff,0xff,0xfc,0x00,0x00,
+  0x00,0x00,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xec,0x00,0x00,
+  0x00,0x00,0x00,0x9f,0xff,0xff,0xff,0xff,0xdf,0xff,0xff,0xff,0xff,0xf8,0x00,0x00,
+  0x00,0x00,0x01,0x8f,0xff,0xff,0xff,0xff,0xff,0xdf,0xdf,0xff,0xff,0xd8,0x00,0x00,
+  0x00,0x00,0x01,0x8f,0xff,0xff,0xff,0xff,0xff,0xbf,0xff,0xff,0xff,0xf0,0x00,0x00,
+  0x00,0x00,0x01,0x8f,0xff,0xff,0xff,0xff,0xfe,0x7f,0xef,0xff,0xff,0xf0,0x00,0x00,
+  0x00,0x00,0x03,0x07,0xff,0xff,0xff,0xff,0xfc,0xff,0x87,0xff,0xff,0xf0,0x00,0x00,
+  0x00,0x00,0x03,0x03,0xff,0xff,0xff,0xff,0xfb,0xf8,0x07,0xff,0xff,0xe0,0x00,0x00,
+  0x00,0x00,0x03,0x00,0x3f,0xff,0xff,0xf3,0xe7,0xf0,0x03,0xff,0xff,0xe0,0x00,0x00,
+  0x00,0x00,0x06,0x00,0x00,0x00,0x02,0x07,0xcf,0xf1,0xe3,0xff,0xff,0xd0,0x00,0x00,
+  0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x0f,0xbf,0xc1,0xf1,0xff,0xff,0xd0,0x00,0x00,
+  0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x1e,0xff,0x80,0xf8,0xff,0xff,0xd0,0x00,0x00,
+  0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x3b,0xff,0x00,0x7c,0xff,0xff,0xf0,0x00,0x00,
+  0x00,0x00,0x0e,0x00,0x00,0x00,0x00,0xff,0xfe,0x00,0x3e,0x7f,0xff,0xf0,0x00,0x00,
+  0x00,0x00,0x0e,0x00,0x00,0x00,0x01,0x7f,0xf1,0x7d,0xff,0x7f,0xff,0xf0,0x00,0x00,
+  0x00,0x00,0x0c,0x00,0x00,0x00,0x07,0xff,0x83,0xff,0xff,0xff,0xff,0xf0,0x00,0x00,
+  0x00,0x00,0x0c,0x08,0x00,0x0f,0xff,0xc0,0x0f,0xfe,0xff,0xff,0xfd,0xf0,0x00,0x00,
+  0x00,0x00,0x1c,0x10,0x00,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfd,0xf0,0x00,0x00,
+  0x00,0x00,0x1c,0x30,0x07,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfc,0xf0,0x00,0x00,
+  0x00,0x00,0x1c,0x30,0x0f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfc,0xf4,0x00,0x00,
+  0x00,0x00,0x1c,0x30,0x3f,0xff,0xff,0xff,0xff,0xff,0xdf,0xdf,0xfc,0xf4,0x00,0x00,
+  0x00,0x00,0x1c,0x60,0x3f,0xff,0xff,0xff,0xff,0xff,0xcf,0xff,0xfe,0x7e,0x00,0x00,
+  0x00,0x00,0x1c,0x60,0x7f,0xff,0xff,0xff,0xff,0xff,0xe7,0xff,0xff,0x7b,0x00,0x00,
+  0x00,0x00,0x3c,0xe0,0x7f,0xff,0xff,0xff,0xff,0xff,0xf7,0xff,0xff,0xfb,0x80,0x00,
+  0x00,0x00,0x3c,0xc0,0xff,0xff,0xff,0xff,0xff,0xff,0xfd,0xff,0xff,0xff,0xc0,0x00,
+  0x00,0x00,0x3d,0xc0,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,0xff,0xff,0xfd,0xc0,0x00
+};
+
+// ============================================================
+//  BUTTON ENGINE
+// ============================================================
+void updateButtons() {
+  for (int i = 0; i < 5; i++) {
+    bool r = digitalRead(BTN_PINS[i]);
+    if (r != btn[i].lastRead) btn[i].lastChange = millis();
+    if ((millis() - btn[i].lastChange) > DEBOUNCE_MS && r != btn[i].stable) {
+      btn[i].stable = r;
+      if (r == LOW) {
+        btn[i].pressStart = millis();
+        btn[i].longFired = false;
+      } else {
+        if (!btn[i].longFired) btn[i].shortPressed = true;
+      }
+    }
+    if (btn[i].stable == LOW && !btn[i].longFired &&
+        (millis() - btn[i].pressStart) >= LONG_PRESS_MS) {
+      btn[i].longFired = true;
+      btn[i].longPressed = true;
+    }
+    btn[i].lastRead = r;
+  }
+}
+
+Act getAction() {
+  updateButtons();
+  Act result = A_NONE;
+  if (btn[4].longPressed)      { btn[4].longPressed = false; result = A_BACK; }
+  else if (btn[0].longPressed) { btn[0].longPressed = false; result = A_ALT;  }
+  else if (btn[0].shortPressed) { btn[0].shortPressed = false; result = A_UP;     }
+  else if (btn[1].shortPressed) { btn[1].shortPressed = false; result = A_DOWN;   }
+  else if (btn[2].shortPressed) { btn[2].shortPressed = false; result = A_LEFT;   }
+  else if (btn[3].shortPressed) { btn[3].shortPressed = false; result = A_RIGHT;  }
+  else if (btn[4].shortPressed) { btn[4].shortPressed = false; result = A_SELECT; }
+  btn[3].longPressed = false; // reserved / unused as separate action
+  if (result != A_NONE) lastActivity = millis();
+  return result;
+}
+
+// ============================================================
+//  SETTINGS
+// ============================================================
+void loadCfg() {
+  prefs.begin("neon", false);
+  cfg.brightness      = prefs.getUChar("br", 3);
+  cfg.menuTimeoutMs   = prefs.getULong("to", 20000);
+  cfg.wallpaperOnBoot = prefs.getBool("wp", true);
+  cfg.screenFlip      = prefs.getBool("flip", false);
+  prefs.end();
+}
+void saveCfg() {
+  prefs.begin("neon", false);
+  prefs.putUChar("br", cfg.brightness);
+  prefs.putULong("to", cfg.menuTimeoutMs);
+  prefs.putBool("wp", cfg.wallpaperOnBoot);
+  prefs.putBool("flip", cfg.screenFlip);
+  prefs.end();
+}
+void applyBrightness() {
+  uint8_t c = 255;
+  switch (cfg.brightness) {
+    case 0: c = 20;  break;
+    case 1: c = 90;  break;
+    case 2: c = 170; break;
+    case 3: c = 255; break;
+  }
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(c);
+}
+void applyScreenFlip() { display.setRotation(cfg.screenFlip ? 2 : 0); }
+
+// ============================================================
+//  UI PRIMITIVES
+// ============================================================
+void clearDisp() {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setTextWrap(false);
+}
+
+void drawMiniHeader(const char* title) {
+  display.setTextSize(1);
+  display.setCursor(2, 1);
+  display.print(title);
+  display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
+}
+
+// ============================================================
+//  SIMPLE BOOT SCREEN (no animation)
+// ============================================================
+void runBootScreen() {
+  clearDisp();
+  display.setTextSize(2);
+  display.setCursor(28, 20);
+  display.print(F("NEON OS"));
+  display.setTextSize(1);
+  display.setCursor(46, 42);
+  display.print(F("v3.0"));
+  display.display();
+  delay(700);
+}
+
+// ============================================================
+//  HOME MENU — 3 icons: Apps / Games / Settings
+// ============================================================
+#define HOME_COUNT 3
+const char* HOME_NAMES[HOME_COUNT] = { "Apps", "Games", "Settings" };
+int homeSel = 0;
+
+void drawHomeIcon(int cx, int cy, int type, uint16_t color) {
+  switch (type) {
+    case 0: // Apps - grid/folder
+      display.drawRect(cx - 8, cy - 6, 16, 12, color);
+      display.drawFastHLine(cx - 8, cy - 2, 16, color);
+      display.drawFastVLine(cx, cy - 2, 6, color);
+      break;
+    case 1: // Games - gamepad
+      display.drawRoundRect(cx - 9, cy - 5, 18, 10, 3, color);
+      display.fillRect(cx - 6, cy - 1, 3, 1, color);
+      display.fillRect(cx - 5, cy - 2, 1, 3, color);
+      display.fillCircle(cx + 5, cy - 2, 1, color);
+      display.fillCircle(cx + 5, cy + 2, 1, color);
+      break;
+    case 2: // Settings - gear
+      display.drawCircle(cx, cy, 5, color);
+      display.drawCircle(cx, cy, 2, color);
+      for (int a = 0; a < 8; a++) {
+        float rad = a * PI / 4;
+        display.drawPixel(cx + cos(rad) * 7, cy + sin(rad) * 7, color);
+      }
+      break;
+  }
+}
+
+void renderHome() {
+  clearDisp();
+
+  display.setCursor(2, 1);
+  display.print(F("NEON OS"));
+  unsigned long upt = millis() / 1000;
+  char timeStr[8];
+  sprintf(timeStr, "%02lu:%02lu", (upt / 60) % 60, upt % 60);
+  display.setCursor(94, 1);
+  display.print(timeStr);
+  display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
+
+  const int boxW = 34, boxH = 34, gap = 8;
+  int totalW = boxW * HOME_COUNT + gap * (HOME_COUNT - 1);
+  int startX = (128 - totalW) / 2;
+  int y = 15;
+
+  for (int i = 0; i < HOME_COUNT; i++) {
+    int x = startX + i * (boxW + gap);
+    bool sel = (i == homeSel);
+    if (sel) display.fillRoundRect(x, y, boxW, boxH, 4, SSD1306_WHITE);
+    else     display.drawRoundRect(x, y, boxW, boxH, 4, SSD1306_WHITE);
+    uint16_t fg = sel ? SSD1306_BLACK : SSD1306_WHITE;
+    drawHomeIcon(x + boxW / 2, y + boxH / 2 - 2, i, fg);
+  }
+
+  const char* nm = HOME_NAMES[homeSel];
+  int w = strlen(nm) * 6;
+  display.setCursor(64 - w / 2, 55);
+  display.print(nm);
+
+  display.display();
+}
+
+// ============================================================
+//  GENERIC MENU (instant switch, no slide animation)
+// ============================================================
+int runMenu(const char* title, const char* items[], int count, int startSel = 0) {
+  int sel = startSel;
+  while (true) {
+    clearDisp();
+    drawMiniHeader(title);
+
+    int visible = 5;
+    int start = sel - visible / 2;
+    if (start < 0) start = 0;
+    if (start > count - visible) start = count - visible;
+    if (start < 0) start = 0;
+
+    for (int i = 0; i < visible && (start + i) < count; i++) {
+      int idx = start + i;
+      int y = 13 + i * 10;
+      bool selected = (idx == sel);
+
+      if (selected) {
+        display.fillRect(0, y - 1, 122, 10, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      }
+      display.setCursor(4, y);
+      display.print(selected ? "> " : "  ");
+      display.print(items[idx]);
+      display.setTextColor(SSD1306_WHITE);
+    }
+
+    if (count > visible) {
+      int barH = max(4, 42 * visible / count);
+      int barY = 12 + (sel * (42 - barH) / (count - 1));
+      display.drawRect(125, 12, 3, 43, SSD1306_WHITE);
+      display.fillRect(126, barY, 1, barH, SSD1306_WHITE);
+    }
+
+    display.display();
+
+    Act a = getAction();
+    if (a == A_UP)    sel = (sel - 1 + count) % count;
+    if (a == A_DOWN)  sel = (sel + 1) % count;
+    if (a == A_SELECT || a == A_RIGHT) return sel;
+    if (a == A_BACK || a == A_LEFT)    return -1;
+    delay(20);
+  }
+}
+
+// ============================================================
+//  VAULT
+// ============================================================
+static char g_textBuf[800];
+static char g_wrapBuf[40][24];
+
+void viewQuote(int idx) {
+  char author[32];
+  pgmCopyTrunc(g_textBuf, sizeof(g_textBuf), (const char*)pgm_read_ptr(&VAULT_QUOTES[idx].text));
+  pgmCopyTrunc(author, sizeof(author), (const char*)pgm_read_ptr(&VAULT_QUOTES[idx].author));
+
+  int totalLines = wrapText(g_textBuf, g_wrapBuf, ARR_LEN(g_wrapBuf), sizeof(g_wrapBuf[0]));
+
+  int scroll = 0;
+  const int linesPerScreen = 6;
+  const int maxScroll = max(0, totalLines - linesPerScreen);
+
+  while (true) {
+    clearDisp();
+    display.setCursor(2, 1);
+    display.print(author);
+    display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
+
+    for (int i = 0; i < linesPerScreen; i++) {
+      int lineIdx = scroll + i;
+      if (lineIdx >= totalLines) break;
+      display.setCursor(2, 13 + i * 8);
+      display.print(g_wrapBuf[lineIdx]);
+    }
+
+    if (totalLines > linesPerScreen) {
+      for (int i = 0; i <= maxScroll; i++) {
+        int dy = 14 + (i * 44) / max(1, maxScroll);
+        if (i == scroll) display.fillCircle(125, dy, 1, SSD1306_WHITE);
+        else display.drawPixel(125, dy, SSD1306_WHITE);
+      }
+    }
+
+    display.display();
+
+    Act a = getAction();
+    if (a == A_UP)   scroll = max(0, scroll - 1);
+    if (a == A_DOWN) scroll = min(maxScroll, scroll + 1);
+    if (a == A_BACK || a == A_LEFT) return;
+    delay(20);
+  }
+}
+
+void runVault() {
+  int sel = 0;
+  while (true) {
+    clearDisp();
+    drawMiniHeader("VAULT");
+
+    int visible = 5;
+    int start = sel - visible / 2;
+    if (start < 0) start = 0;
+    if (start > (int)VAULT_COUNT - visible) start = (int)VAULT_COUNT - visible;
+    if (start < 0) start = 0;
+
+    for (int i = 0; i < visible && (start + i) < (int)VAULT_COUNT; i++) {
+      int idx = start + i;
+      int y = 13 + i * 10;
+      bool selected = (idx == sel);
+
+      char category[16];
+      pgmCopyTrunc(category, sizeof(category), (const char*)pgm_read_ptr(&VAULT_QUOTES[idx].category));
+
+      char author[20];
+      pgmCopyTrunc(author, sizeof(author), (const char*)pgm_read_ptr(&VAULT_QUOTES[idx].author));
+      if (strlen(author) > 11) author[11] = 0;
+
+      if (selected) {
+        display.fillRect(0, y - 1, 122, 10, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      }
+      display.setCursor(2, y);
+      display.print(category);
+      display.setCursor(48, y);
+      display.print(author);
+      if (selected) display.setTextColor(SSD1306_WHITE);
+    }
+
+    if ((int)VAULT_COUNT > visible) {
+      int barH = max(4, 42 * visible / (int)VAULT_COUNT);
+      int barY = 12 + (sel * (42 - barH) / ((int)VAULT_COUNT - 1));
+      display.drawRect(125, 12, 3, 43, SSD1306_WHITE);
+      display.fillRect(126, barY, 1, barH, SSD1306_WHITE);
+    }
+
+    display.display();
+
+    Act a = getAction();
+    if (a == A_UP)   sel = (sel - 1 + VAULT_COUNT) % VAULT_COUNT;
+    if (a == A_DOWN) sel = (sel + 1) % VAULT_COUNT;
+    if (a == A_BACK || a == A_LEFT) return;
+    if (a == A_SELECT || a == A_RIGHT) viewQuote(sel);
+    delay(20);
+  }
+}
+
+// ============================================================
+//  PROFILE
+// ============================================================
+void runProfile() {
+  pgmCopyTrunc(g_textBuf, sizeof(g_textBuf), PROFILE_TEXT);
+  int totalLines = wrapText(g_textBuf, g_wrapBuf, ARR_LEN(g_wrapBuf), sizeof(g_wrapBuf[0]));
+
+  int scroll = 0;
+  const int linesPerScreen = 6;
+  const int maxScroll = max(0, totalLines - linesPerScreen);
+
+  while (true) {
+    clearDisp();
+    drawMiniHeader("PROFILE");
+
+    for (int i = 0; i < linesPerScreen; i++) {
+      int lineIdx = scroll + i;
+      if (lineIdx >= totalLines) break;
+      display.setCursor(2, 13 + i * 8);
+      display.print(g_wrapBuf[lineIdx]);
+    }
+
+    if (totalLines > linesPerScreen) {
+      for (int i = 0; i <= maxScroll; i++) {
+        int dy = 14 + (i * 44) / max(1, maxScroll);
+        if (i == scroll) display.fillCircle(125, dy, 1, SSD1306_WHITE);
+        else display.drawPixel(125, dy, SSD1306_WHITE);
+      }
+    }
+
+    display.display();
+
+    Act a = getAction();
+    if (a == A_UP)   scroll = max(0, scroll - 1);
+    if (a == A_DOWN) scroll = min(maxScroll, scroll + 1);
+    if (a == A_BACK || a == A_LEFT) return;
+    delay(20);
+  }
+}
+
+// ============================================================
+//  GAME OF LIFE  (FIXED: SELECT=toggle cell, ALT(hold UP)=play/pause)
+// ============================================================
+#define LIFE_COLS 32
+#define LIFE_ROWS 16
+#define LIFE_CELL 4
+
+uint16_t lifeGrid[LIFE_ROWS];
+uint16_t lifeNext[LIFE_ROWS];
+
+int lifeCursorX = LIFE_COLS / 2;
+int lifeCursorY = LIFE_ROWS / 2;
+bool lifeRunning = false;
+
+void lifeClear() {
+  for (int i = 0; i < LIFE_ROWS; i++) { lifeGrid[i] = 0; lifeNext[i] = 0; }
+}
+
+void lifeRandomize() {
+  for (int i = 0; i < LIFE_ROWS; i++) lifeGrid[i] = (uint16_t)esp_random();
+}
+
+int lifeCountNeighbors(int r, int c) {
+  int count = 0;
+  for (int dr = -1; dr <= 1; dr++) {
+    for (int dc = -1; dc <= 1; dc++) {
+      if (dr == 0 && dc == 0) continue;
+      int rr = r + dr, cc = c + dc;
+      if (rr < 0 || rr >= LIFE_ROWS || cc < 0 || cc >= LIFE_COLS) continue;
+      if (lifeGrid[rr] & (1 << cc)) count++;
+    }
+  }
+  return count;
+}
+
+void lifeStep() {
+  for (int r = 0; r < LIFE_ROWS; r++) {
+    lifeNext[r] = 0;
+    for (int c = 0; c < LIFE_COLS; c++) {
+      bool alive = lifeGrid[r] & (1 << c);
+      int n = lifeCountNeighbors(r, c);
+      bool next = false;
+      if (alive && (n == 2 || n == 3)) next = true;
+      if (!alive && n == 3) next = true;
+      if (next) lifeNext[r] |= (1 << c);
+    }
+  }
+  for (int i = 0; i < LIFE_ROWS; i++) lifeGrid[i] = lifeNext[i];
+}
+
+void renderLife() {
+  clearDisp();
+  drawMiniHeader(lifeRunning ? "LIFE  [RUNNING]" : "LIFE  [PAUSED]");
+
+  for (int r = 0; r < LIFE_ROWS; r++) {
+    for (int c = 0; c < LIFE_COLS; c++) {
+      if (lifeGrid[r] & (1 << c)) {
+        display.fillRect(c * LIFE_CELL, 12 + r * LIFE_CELL, LIFE_CELL - 1, LIFE_CELL - 1, SSD1306_WHITE);
+      }
+    }
+  }
+
+  if (!lifeRunning) {
+    display.drawRect(lifeCursorX * LIFE_CELL - 1, 12 + lifeCursorY * LIFE_CELL - 1,
+                    LIFE_CELL + 1, LIFE_CELL + 1, SSD1306_WHITE);
+  }
+
+  display.display();
+}
+
+void runLife() {
+  lifeClear();
+  lifeCursorX = LIFE_COLS / 2;
+  lifeCursorY = LIFE_ROWS / 2;
+  lifeRunning = false;
+
+  unsigned long lastStep = millis();
+
+  while (true) {
+    if (lifeRunning && millis() - lastStep > 150) {
+      lastStep = millis();
+      lifeStep();
+    }
+
+    renderLife();
+
+    Act a = getAction(); // also refreshes debounce/long-press state
+
+    bool longDown = btn[1].longFired;   // hold DOWN  = randomize
+    bool longLeft = btn[2].longFired;   // hold LEFT  = clear
+
+    if (a == A_BACK) return;
+
+    if (a == A_ALT) { lifeRunning = !lifeRunning; continue; }  // hold UP = play/pause (CONTINUE)
+
+    if (longDown) { btn[1].longFired = false; lifeRandomize(); continue; }
+    if (longLeft) { btn[2].longFired = false; lifeClear();     continue; }
+
+    if (!lifeRunning) {
+      if (a == A_SELECT) lifeGrid[lifeCursorY] ^= (1 << lifeCursorX); // PLACE / REMOVE CELL
+      if (a == A_UP    && lifeCursorY > 0) lifeCursorY--;
+      if (a == A_DOWN  && lifeCursorY < LIFE_ROWS - 1) lifeCursorY++;
+      if (a == A_LEFT  && lifeCursorX > 0) lifeCursorX--;
+      if (a == A_RIGHT && lifeCursorX < LIFE_COLS - 1) lifeCursorX++;
+    }
+
+    delay(30);
+  }
+}
+
+// ============================================================
+//  SCREENSAVER
+// ============================================================
+void runScreensaver() {
+  const char* modes[] = {"DVD Bounce", "Radar Sweep", "Concentric"};
+  int mode = 0;
+  int sel = 0;
+
+  int dvdX = 20, dvdY = 20;
+  int dvdDX = 1, dvdDY = 1;
+  const int DVD_W = 40, DVD_H = 14;
+
+  float radarAngle = 0;
+  int ringPhase = 0;
+
+  unsigned long lastFrame = millis();
+
+  while (true) {
+    if (mode == 0) {
+      clearDisp();
+      drawMiniHeader("SCREENSAVER");
+      for (int i = 0; i < 3; i++) {
+        int y = 16 + i * 12;
+        if (i == sel) {
+          display.fillRect(0, y - 1, 128, 11, SSD1306_WHITE);
+          display.setTextColor(SSD1306_BLACK);
+        }
+        display.setCursor(6, y);
+        display.print(modes[i]);
+        display.setTextColor(SSD1306_WHITE);
+      }
+      display.display();
+      Act a = getAction();
+      if (a == A_BACK) return;
+      if (a == A_UP) sel = (sel - 1 + 3) % 3;
+      if (a == A_DOWN) sel = (sel + 1) % 3;
+      if (a == A_SELECT) {
+        mode = sel + 1;
+        lastFrame = millis();
+      }
+      delay(30);
+      continue;
+    }
+
+    Act a = getAction();
+    if (a != A_NONE) {
+      if (a == A_BACK) return;
+      mode = 0;
+      sel = 0;
+      continue;
+    }
+
+    if (millis() - lastFrame < 30) { delay(5); continue; }
+    lastFrame = millis();
+
+    if (mode == 1) {
+      clearDisp();
+      dvdX += dvdDX;
+      dvdY += dvdDY;
+      if (dvdX <= 0 || dvdX + DVD_W >= 128) {
+        dvdDX = -dvdDX;
+        dvdX = constrain(dvdX, 0, 128 - DVD_W);
+      }
+      if (dvdY <= 10 || dvdY + DVD_H >= 64) {
+        dvdDY = -dvdDY;
+        dvdY = constrain(dvdY, 11, 64 - DVD_H);
+      }
+      display.drawRoundRect(dvdX, dvdY, DVD_W, DVD_H, 4, SSD1306_WHITE);
+      display.setTextSize(1);
+      display.setCursor(dvdX + 8, dvdY + 3);
+      display.print(F("NEON"));
+    }
+    else if (mode == 2) {
+      clearDisp();
+      int cx = 64, cy = 32;
+      display.drawCircle(cx, cy, 6, SSD1306_WHITE);
+      display.drawCircle(cx, cy, 14, SSD1306_WHITE);
+      display.drawCircle(cx, cy, 22, SSD1306_WHITE);
+      display.drawCircle(cx, cy, 30, SSD1306_WHITE);
+      display.drawFastHLine(0, cy, 128, SSD1306_WHITE);
+      display.drawFastVLine(cx, 0, 64, SSD1306_WHITE);
+      for (float r = 0; r < 30; r += 1) {
+        int x = cx + cos(radarAngle) * r;
+        int y = cy + sin(radarAngle) * r;
+        if (x >= 0 && x < 128 && y >= 0 && y < 64) display.drawPixel(x, y, SSD1306_WHITE);
+      }
+      for (int t = 1; t <= 6; t++) {
+        float trailAngle = radarAngle - t * 0.12f;
+        for (float r = 0; r < 30 - t * 3; r += 1.5) {
+          int x = cx + cos(trailAngle) * r;
+          int y = cy + sin(trailAngle) * r;
+          if (x >= 0 && x < 128 && y >= 0 && y < 64) display.drawPixel(x, y, SSD1306_WHITE);
+        }
+      }
+      radarAngle += 0.12f;
+      if (radarAngle > TWO_PI) radarAngle -= TWO_PI;
+    }
+    else if (mode == 3) {
+      clearDisp();
+      int cx = 64, cy = 32;
+      for (int i = 0; i < 4; i++) {
+        int phase = (ringPhase + i * 10) % 40;
+        int r = 5 + phase;
+        if (r < 30) display.drawCircle(cx, cy, r, SSD1306_WHITE);
+      }
+      int pdot = 2 + ((ringPhase / 2) % 4);
+      display.fillCircle(cx, cy, pdot, SSD1306_WHITE);
+      ringPhase++;
+      if (ringPhase > 40) ringPhase = 0;
+    }
+
+    display.display();
+  }
+}
+
+// ============================================================
+//  DINO RUNNER  (FIXED jump feel + auto-exit)
+// ============================================================
+#define DINO_GROUND 56
+#define DINO_TREX_X 12
+#define DINO_JUMP_VELOCITY  -10
+#define DINO_GRAVITY_UP       1
+#define DINO_GRAVITY_DOWN     2
+#define DINO_JUMP_CUTOFF     -3
+#define DINO_AUTO_EXIT_MS  4000
+
+static const uint8_t PROGMEM dinoRun1[] = {
+  0x00,0x0F,0x80, 0x00,0x1F,0xC0, 0x00,0x1D,0xC0, 0x00,0x1F,0xC0,
+  0x00,0x1F,0xC0, 0x00,0x1F,0x00, 0x80,0x1F,0x80, 0x80,0x3F,0xC0,
+  0xC0,0x3F,0xC0, 0xE0,0x7F,0xC0, 0xF0,0xFF,0xC0, 0xFF,0xFF,0xC0,
+  0x7F,0xFF,0xC0, 0x3F,0xFF,0xC0, 0x1F,0xFF,0x80, 0x0F,0xFF,0x00,
+  0x07,0xFE,0x00, 0x07,0x1C,0x00, 0x06,0x18,0x00, 0x07,0x00,0x00
+};
+static const uint8_t PROGMEM dinoRun2[] = {
+  0x00,0x0F,0x80, 0x00,0x1F,0xC0, 0x00,0x1D,0xC0, 0x00,0x1F,0xC0,
+  0x00,0x1F,0xC0, 0x00,0x1F,0x00, 0x80,0x1F,0x80, 0x80,0x3F,0xC0,
+  0xC0,0x3F,0xC0, 0xE0,0x7F,0xC0, 0xF0,0xFF,0xC0, 0xFF,0xFF,0xC0,
+  0x7F,0xFF,0xC0, 0x3F,0xFF,0xC0, 0x1F,0xFF,0x80, 0x0F,0xFF,0x00,
+  0x07,0xFE,0x00, 0x07,0x1C,0x00, 0x06,0x18,0x00, 0x00,0x1C,0x00
+};
+static const uint8_t PROGMEM dinoDuck[] = {
+  0x00,0x00,0x70, 0x00,0x00,0xF0, 0x00,0x00,0xB0, 0x00,0x00,0xF0,
+  0x80,0x00,0xF0, 0xC0,0x01,0xF0, 0xE2,0xFF,0xF0, 0xFF,0xFF,0xFF,
+  0x7F,0xFF,0xFF, 0x3F,0xFF,0xFF, 0x0F,0xFF,0x00, 0x06,0x18,0x00
+};
+static const uint8_t PROGMEM cactusSmall[] = {
+  0x30,0x30,0x30,0x58,0x5A,0x5A,0x7A,0x3C,0x30,0x30,0x30,0x30,0x30,0x30
+};
+static const uint8_t PROGMEM cactusBig[] = {
+  0x0E,0x00, 0x0E,0x00, 0x0E,0x00, 0x4E,0x00, 0x4E,0x40, 0x4E,0x40,
+  0x4E,0x40, 0x4E,0x40, 0x7C,0x40, 0x3C,0x40, 0x0F,0xC0, 0x0E,0x00,
+  0x0E,0x00, 0x0E,0x00, 0x0E,0x00, 0x0E,0x00, 0x0E,0x00, 0x0E,0x00,
+  0x0E,0x00, 0x0E,0x00
+};
+static const uint8_t PROGMEM pteroUp[] = {
+  0x00,0x00, 0x18,0x18, 0x3C,0x3C, 0x7E,0x7E, 0x3F,0xF0,
+  0x1F,0xE0, 0x0F,0x80, 0x06,0x00, 0x06,0x00, 0x00,0x00
+};
+static const uint8_t PROGMEM pteroDn[] = {
+  0x00,0x00, 0x00,0x00, 0x06,0x00, 0x0F,0x00, 0x1F,0x80,
+  0x3F,0xF0, 0x7E,0x7E, 0x3C,0x3C, 0x18,0x18, 0x00,0x00
+};
+
+uint16_t dinoHiScore = 0;
+uint16_t dinoScore = 0;
+uint8_t  dinoLives = 3;
+bool     dHiScoreSaved = false;
+
+struct DinoCactus { bool active; bool big; int16_t x; };
+struct DinoPtero  { bool active; int16_t x, y; uint8_t frame, tick; };
+
+DinoCactus dCacti[3];
+DinoPtero  dPteros[2];
+
+int16_t  dTrexFeet = DINO_GROUND;
+int8_t   dTrexVy = 0;
+bool     dTrexGrounded = true;
+bool     dTrexDucking = false;
+bool     dTrexDead = false;
+uint8_t  dTrexAnimFrm = 0;
+uint8_t  dTrexAnimTck = 0;
+uint8_t  dTrexBlink = 0;
+uint8_t  dDeathTimer = 0;
+uint16_t dGroundOff = 0;
+int16_t  dNextSpawn = 130;
+uint8_t  dScrollSpeed = 2;
+bool     dJumpPrevHeld = false;
+
+void dinoDrawSprite(int16_t x, int16_t y, const uint8_t* data, uint8_t w, uint8_t h) {
+  int stride = (w + 7) / 8;
+  for (uint8_t row = 0; row < h; row++) {
+    for (uint8_t b = 0; b < stride; b++) {
+      uint8_t byte = pgm_read_byte(data + row * stride + b);
+      for (uint8_t k = 0; k < 8; k++) {
+        if (byte & (0x80 >> k)) {
+          int px = x + b * 8 + k;
+          int py = y + row;
+          if (px >= 0 && px < 128 && py >= 0 && py < 64)
+            display.drawPixel(px, py, SSD1306_WHITE);
+        }
+      }
+    }
+  }
+}
+
+void dinoSpawnCactus() {
+  for (int i = 0; i < 3; i++) {
+    if (!dCacti[i].active) {
+      dCacti[i].active = true;
+      dCacti[i].big = random(0, 2);
+      dCacti[i].x = 128 + 4;
+      return;
+    }
+  }
+}
+
+void dinoSpawnPtero() {
+  for (int i = 0; i < 2; i++) {
+    if (!dPteros[i].active) {
+      dPteros[i].active = true;
+      dPteros[i].x = 128 + 4;
+      dPteros[i].y = (random(0, 2) == 0) ? 30 : 46;
+      dPteros[i].frame = 0;
+      dPteros[i].tick = 0;
+      return;
+    }
+  }
+}
+
+void dinoReset() {
+  dTrexFeet = DINO_GROUND;
+  dTrexVy = 0;
+  dTrexGrounded = true;
+  dTrexDucking = false;
+  dTrexDead = false;
+  dTrexAnimFrm = 0;
+  dTrexAnimTck = 0;
+  dTrexBlink = 0;
+  dDeathTimer = 0;
+  dinoScore = 0;
+  dinoLives = 3;
+  dScrollSpeed = 2;
+  dGroundOff = 0;
+  dNextSpawn = 130;
+  dHiScoreSaved = false;
+  dJumpPrevHeld = false;
+  for (int i = 0; i < 3; i++) dCacti[i].active = false;
+  for (int i = 0; i < 2; i++) dPteros[i].active = false;
+}
+
+void dinoDrawTrex() {
+  if (dTrexBlink && (dTrexBlink & 2)) return;
+  if (dTrexDucking && dTrexGrounded) {
+    dinoDrawSprite(DINO_TREX_X, dTrexFeet - 12, dinoDuck, 20, 12);
+  } else {
+    const uint8_t* spr = (dTrexAnimFrm & 1) ? dinoRun2 : dinoRun1;
+    dinoDrawSprite(DINO_TREX_X, dTrexFeet - 20, spr, 18, 20);
+  }
+}
+
+bool dinoOverlap(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh) {
+  return (ax < bx + bw) && (ax + aw > bx) && (ay < by + bh) && (ay + ah > by);
+}
+
+void dinoUpdate() {
+  dScrollSpeed = 2 + dinoScore / 300;
+  if (dScrollSpeed > 6) dScrollSpeed = 6;
+
+  dGroundOff = (dGroundOff + dScrollSpeed) & 127;
+
+  if (!dTrexDead) {
+    // ---- Input: press-edge jump + variable jump height ----
+    bool jumpHeld = (btn[0].stable == LOW);
+    bool jumpPressEdge = jumpHeld && !dJumpPrevHeld;
+    dJumpPrevHeld = jumpHeld;
+    bool wantDuck = (btn[1].stable == LOW);
+
+    if (dTrexGrounded) {
+      if (jumpPressEdge) {
+        dTrexVy = DINO_JUMP_VELOCITY;
+        dTrexGrounded = false;
+        dTrexDucking = false;
+      } else {
+        dTrexDucking = wantDuck;
+      }
+    } else {
+      // Release early -> shorter hop (variable jump height)
+      if (dTrexVy < 0 && !jumpHeld && dTrexVy < DINO_JUMP_CUTOFF) {
+        dTrexVy = DINO_JUMP_CUTOFF;
+      }
+    }
+
+    // ---- Physics: snappy asymmetric gravity ----
+    if (!dTrexGrounded) {
+      dTrexFeet += dTrexVy;
+      dTrexVy += (dTrexVy < 0) ? DINO_GRAVITY_UP : DINO_GRAVITY_DOWN;
+      if (dTrexFeet >= DINO_GROUND) {
+        dTrexFeet = DINO_GROUND;
+        dTrexVy = 0;
+        dTrexGrounded = true;
+      }
+    }
+
+    if (++dTrexAnimTck >= 4) { dTrexAnimTck = 0; dTrexAnimFrm ^= 1; }
+    if (dTrexBlink) dTrexBlink--;
+  } else {
+    dDeathTimer++;
+    if (!dHiScoreSaved && dDeathTimer > 30) {
+      dHiScoreSaved = true;
+      if (dinoScore > dinoHiScore) {
+        dinoHiScore = dinoScore;
+        prefs.begin("trex", false);
+        prefs.putUShort("hi", dinoHiScore);
+        prefs.end();
+      }
+    }
+  }
+
+  if (!dTrexDead) {
+    dNextSpawn -= dScrollSpeed;
+    if (dNextSpawn <= 0) {
+      if (dinoScore > 400 && random(0, 100) < 28 && !dPteros[0].active && !dPteros[1].active) {
+        dinoSpawnPtero();
+        dNextSpawn = random(150, 300);
+      } else {
+        dinoSpawnCactus();
+        dNextSpawn = random(110, 260);
+      }
+    }
+  }
+
+  for (int i = 0; i < 3; i++) {
+    if (!dCacti[i].active) continue;
+    dCacti[i].x -= dScrollSpeed;
+    if (dCacti[i].x < -14) dCacti[i].active = false;
+  }
+  for (int i = 0; i < 2; i++) {
+    if (!dPteros[i].active) continue;
+    dPteros[i].x -= dScrollSpeed + 2;
+    if (++dPteros[i].tick >= 8) { dPteros[i].tick = 0; dPteros[i].frame ^= 1; }
+    if (dPteros[i].x < -16) dPteros[i].active = false;
+  }
+
+  if (!dTrexDead && dTrexBlink == 0) {
+    int hx, hy, hw, hh;
+    if (dTrexDucking && dTrexGrounded) {
+      hx = DINO_TREX_X + 2; hy = dTrexFeet - 8; hw = 16; hh = 8;
+    } else {
+      hx = DINO_TREX_X + 3; hy = dTrexFeet - 18; hw = 12; hh = 16;
+    }
+
+    bool hit = false;
+    for (int i = 0; i < 3 && !hit; i++) {
+      if (!dCacti[i].active) continue;
+      int w = dCacti[i].big ? 12 : 8;
+      int h = dCacti[i].big ? 20 : 14;
+      if (dinoOverlap(hx, hy, hw, hh, dCacti[i].x + 2, DINO_GROUND - h + 2, w - 4, h - 4))
+        hit = true;
+    }
+    for (int i = 0; i < 2 && !hit; i++) {
+      if (!dPteros[i].active) continue;
+      if (dinoOverlap(hx, hy, hw, hh, dPteros[i].x + 2, dPteros[i].y + 2, 12, 6))
+        hit = true;
+    }
+
+    if (hit) {
+      if (dinoLives > 0) {
+        dinoLives--;
+        dTrexBlink = 90;
+      } else {
+        dTrexDead = true;
+        dDeathTimer = 0;
+      }
+    }
+  }
+
+  if (!dTrexDead && dinoScore < 99999) dinoScore++;
+}
+
+void dinoRender(const char* overlayLine2 = nullptr) {
+  clearDisp();
+
+  display.setCursor(0, 0);
+  display.print(F("HI:"));
+  display.print(dinoHiScore);
+  display.print(F("  "));
+  display.print(dinoScore);
+  for (int i = 0; i < dinoLives; i++) {
+    display.fillCircle(100 + i * 8, 4, 2, SSD1306_WHITE);
+  }
+
+  display.drawFastHLine(0, DINO_GROUND, 128, SSD1306_WHITE);
+  for (int x = 0; x < 128; x += 2) {
+    if ((x + dGroundOff) & 2) display.drawPixel(x, DINO_GROUND + 1, SSD1306_WHITE);
+  }
+
+  for (int i = 0; i < 3; i++) {
+    if (!dCacti[i].active) continue;
+    if (dCacti[i].big) dinoDrawSprite(dCacti[i].x, DINO_GROUND - 20, cactusBig, 12, 20);
+    else dinoDrawSprite(dCacti[i].x, DINO_GROUND - 14, cactusSmall, 8, 14);
+  }
+
+  for (int i = 0; i < 2; i++) {
+    if (!dPteros[i].active) continue;
+    const uint8_t* spr = (dPteros[i].frame & 1) ? pteroDn : pteroUp;
+    dinoDrawSprite(dPteros[i].x, dPteros[i].y, spr, 16, 10);
+  }
+
+  dinoDrawTrex();
+
+  if (dTrexDead && dDeathTimer > 20) {
+    display.fillRect(14, 20, 100, 24, SSD1306_BLACK);
+    display.drawRect(14, 20, 100, 24, SSD1306_WHITE);
+    display.setTextSize(1);
+    display.setCursor(28, 24);
+    display.print(F("GAME OVER"));
+    if (overlayLine2) {
+      display.setCursor(20, 34);
+      display.print(overlayLine2);
+    }
+  }
+
+  display.display();
+}
+
+// Returns true if the player chose to restart, false if they exited/timed out.
+void runDino() {
+  dinoReset();
+
+  prefs.begin("trex", true);
+  dinoHiScore = prefs.getUShort("hi", 0);
+  prefs.end();
+  if (dinoHiScore == 0xFFFF) dinoHiScore = 0;
+
+  unsigned long lastFrame = millis();
+  bool deadHandled = false;
+
+  while (true) {
+    if (millis() - lastFrame < 33) { delay(2); continue; }
+    lastFrame = millis();
+
+    updateButtons();
+
+    if (btn[4].longFired) {
+      btn[4].longFired = false;
+      return; // manual exit
+    }
+
+    if (!dTrexDead) {
+      dinoUpdate();
+      dinoRender();
+      continue;
+    }
+
+    if (dDeathTimer < 60) {
+      dinoUpdate();
+      dinoRender();
+      continue;
+    }
+
+    if (!deadHandled) {
+      deadHandled = true;
+      unsigned long waitStart = millis();
+      bool restarted = false;
+
+      while (true) {
+        unsigned long elapsed = millis() - waitStart;
+        if (elapsed >= DINO_AUTO_EXIT_MS) break; // AUTO EXIT
+
+        updateButtons();
+        if (btn[4].longFired) { btn[4].longFired = false; return; }
+
+        Act a = getAction();
+        if (a == A_UP || a == A_SELECT) { restarted = true; break; }
+        if (a == A_BACK) return;
+
+        char line2[24];
+        int secsLeft = (DINO_AUTO_EXIT_MS - (int)elapsed) / 1000 + 1;
+        snprintf(line2, sizeof(line2), "Exit in %ds..", secsLeft);
+        dinoRender(line2);
+        delay(30);
+      }
+
+      if (restarted) {
+        dinoReset();
+        deadHandled = false;
+      } else {
+        return; // AUTO-EXIT back to Games menu
+      }
+    }
+  }
+}
+
+// ============================================================
+//  TETRIS (new)
+// ============================================================
+#define TET_COLS 10
+#define TET_ROWS 20
+#define TET_BLOCK 2
+#define TET_FIELD_X 2
+#define TET_FIELD_Y 2
+
+#define TET_CLEAR_MS        420
+#define TET_FLASH_MS         70
+#define TET_BASE_DROP_MS    800
+#define TET_MIN_DROP_MS      80
+#define TET_DROP_STEP_MS     70
+#define TET_LINES_PER_LEVEL  10
+#define TET_REPEAT_DELAY_MS 170
+#define TET_REPEAT_RATE_MS   55
+
+const uint16_t TET_PIECES[7][4] = {
+  { 0x0F00, 0x2222, 0x00F0, 0x4444 },   // I
+  { 0x8E00, 0x6440, 0x0E20, 0x44C0 },   // J
+  { 0x2E00, 0x4460, 0x0E80, 0xC440 },   // L
+  { 0x6600, 0x6600, 0x6600, 0x6600 },   // O
+  { 0x6C00, 0x4620, 0x06C0, 0x8C40 },   // S
+  { 0x4E00, 0x4640, 0x0E40, 0x4C40 },   // T
+  { 0xC600, 0x2640, 0x0C60, 0x4C80 }    // Z
+};
+
+enum TetGameState : uint8_t { TETST_PLAYING, TETST_CLEARING, TETST_GAMEOVER };
+
+uint8_t  tetBoard[TET_ROWS][TET_COLS];
+uint8_t  tetPieceType = 0, tetPieceRot = 0, tetNextType = 0;
+int8_t   tetPieceX = 3, tetPieceY = 0;
+uint8_t  tetClearRows[4];
+uint8_t  tetClearCount = 0;
+uint32_t tetClearStart = 0, tetFlashTimer = 0;
+uint32_t tetScore = 0;
+uint16_t tetLinesCleared = 0;
+uint8_t  tetLevel = 0;
+uint32_t tetDropInterval = TET_BASE_DROP_MS;
+uint32_t tetDropTimer = 0;
+TetGameState tetState = TETST_PLAYING;
+bool tetDirty = true;
+
+inline bool tetCellSet(uint16_t shape, int r, int c) {
+  return (shape >> (15 - (r * 4 + c))) & 1;
+}
+
+bool tetCollides(uint8_t type, uint8_t rot, int8_t px, int8_t py) {
+  uint16_t shape = TET_PIECES[type][rot];
+  for (int r = 0; r < 4; r++) {
+    for (int c = 0; c < 4; c++) {
+      if (!tetCellSet(shape, r, c)) continue;
+      int bx = px + c, by = py + r;
+      if (bx < 0 || bx >= TET_COLS) return true;
+      if (by >= TET_ROWS) return true;
+      if (by >= 0 && tetBoard[by][bx]) return true;
+    }
+  }
+  return false;
+}
+
+void tetLockPiece();
+
+void tetSpawnPiece() {
+  tetPieceType = tetNextType;
+  tetNextType  = random(0, 7);
+  tetPieceRot  = 0;
+  tetPieceX    = 3;
+
+  uint16_t shape = TET_PIECES[tetPieceType][0];
+  tetPieceY = 0;
+  for (int r = 0; r < 4; r++) {
+    bool found = false;
+    for (int c = 0; c < 4; c++) if (tetCellSet(shape, r, c)) { found = true; break; }
+    if (found) { tetPieceY = -r; break; }
+  }
+
+  if (tetCollides(tetPieceType, tetPieceRot, tetPieceX, tetPieceY)) {
+    tetState = TETST_GAMEOVER;
+  } else {
+    tetState = TETST_PLAYING;
+    tetDropTimer = millis();
+  }
+  tetDirty = true;
+}
+
+void tetRotatePiece() {
+  uint8_t nr = (tetPieceRot + 1) & 3;
+  if (!tetCollides(tetPieceType, nr, tetPieceX, tetPieceY)) { tetPieceRot = nr; return; }
+  const int8_t kicks[4] = { -1, 1, -2, 2 };
+  for (int i = 0; i < 4; i++) {
+    if (!tetCollides(tetPieceType, nr, tetPieceX + kicks[i], tetPieceY)) {
+      tetPieceRot = nr;
+      tetPieceX  += kicks[i];
+      return;
+    }
+  }
+}
+
+void tetHardDrop() {
+  while (!tetCollides(tetPieceType, tetPieceRot, tetPieceX, tetPieceY + 1)) {
+    tetPieceY++;
+    tetScore += 2;
+  }
+  tetLockPiece();
+}
+
+void tetLockPiece() {
+  uint16_t shape = TET_PIECES[tetPieceType][tetPieceRot];
+  for (int r = 0; r < 4; r++) {
+    for (int c = 0; c < 4; c++) {
+      if (!tetCellSet(shape, r, c)) continue;
+      int bx = tetPieceX + c, by = tetPieceY + r;
+      if (by >= 0 && by < TET_ROWS && bx >= 0 && bx < TET_COLS) tetBoard[by][bx] = 1;
+    }
+  }
+
+  tetClearCount = 0;
+  for (int r = 0; r < TET_ROWS; r++) {
+    bool full = true;
+    for (int c = 0; c < TET_COLS; c++) if (!tetBoard[r][c]) { full = false; break; }
+    if (full && tetClearCount < 4) tetClearRows[tetClearCount++] = r;
+  }
+
+  if (tetClearCount > 0) {
+    tetState = TETST_CLEARING;
+    tetClearStart = millis();
+    tetFlashTimer = tetClearStart;
+  } else {
+    tetSpawnPiece();
+  }
+  tetDirty = true;
+}
+
+void tetRemoveClearedRows() {
+  for (int i = 0; i < tetClearCount - 1; i++)
+    for (int j = i + 1; j < tetClearCount; j++)
+      if (tetClearRows[j] < tetClearRows[i]) {
+        uint8_t t = tetClearRows[i]; tetClearRows[i] = tetClearRows[j]; tetClearRows[j] = t;
+      }
+
+  for (int i = tetClearCount - 1; i >= 0; i--) {
+    int row = tetClearRows[i];
+    for (int r = row; r > 0; r--)
+      for (int c = 0; c < TET_COLS; c++) tetBoard[r][c] = tetBoard[r - 1][c];
+    for (int c = 0; c < TET_COLS; c++) tetBoard[0][c] = 0;
+  }
+  tetClearCount = 0;
+}
+
+void tetApplyScore(uint8_t n) {
+  static const uint16_t pts[5] = { 0, 100, 300, 500, 800 };
+  if (n > 4) n = 4;
+  tetScore += (uint32_t)pts[n] * (uint32_t)(tetLevel + 1);
+  tetLinesCleared += n;
+
+  uint8_t newLevel = tetLinesCleared / TET_LINES_PER_LEVEL;
+  if (newLevel != tetLevel) {
+    tetLevel = newLevel;
+    tetDropInterval = TET_BASE_DROP_MS - (uint32_t)tetLevel * TET_DROP_STEP_MS;
+    if (tetDropInterval < TET_MIN_DROP_MS) tetDropInterval = TET_MIN_DROP_MS;
+  }
+}
+
+void tetResetGame() {
+  memset(tetBoard, 0, sizeof(tetBoard));
+  tetScore = 0;
+  tetLinesCleared = 0;
+  tetLevel = 0;
+  tetDropInterval = TET_BASE_DROP_MS;
+  tetClearCount = 0;
+  tetNextType = random(0, 7);
+  tetSpawnPiece();
+  tetDropTimer = millis();
+  tetDirty = true;
+}
+
+void tetDrawPreview(uint8_t type) {
+  uint16_t shape = TET_PIECES[type][0];
+  int minR = 4, maxR = -1, minC = 4, maxC = -1;
+  for (int r = 0; r < 4; r++)
+    for (int c = 0; c < 4; c++)
+      if (tetCellSet(shape, r, c)) {
+        if (r < minR) minR = r; if (r > maxR) maxR = r;
+        if (c < minC) minC = c; if (c > maxC) maxC = c;
+      }
+  if (maxR < 0) return;
+
+  const int BS = 4;
+  int w = (maxC - minC + 1) * BS;
+  int h = (maxR - minR + 1) * BS;
+  int ox = 35 + (20 - w) / 2;
+  int oy =  9 + (20 - h) / 2;
+
+  for (int r = minR; r <= maxR; r++)
+    for (int c = minC; c <= maxC; c++)
+      if (tetCellSet(shape, r, c))
+        display.fillRect(ox + (c - minC) * BS, oy + (r - minR) * BS, BS, BS, SSD1306_WHITE);
+}
+
+void tetDrawField() {
+  display.drawRect(TET_FIELD_X - 1, TET_FIELD_Y - 1,
+                    TET_COLS * TET_BLOCK + 2, TET_ROWS * TET_BLOCK + 2, SSD1306_WHITE);
+
+  bool flashPhase = false;
+  if (tetState == TETST_CLEARING) flashPhase = ((millis() - tetClearStart) / TET_FLASH_MS) & 1;
+
+  for (int r = 0; r < TET_ROWS; r++) {
+    bool rowClearing = false;
+    if (tetState == TETST_CLEARING)
+      for (int i = 0; i < tetClearCount; i++) if (tetClearRows[i] == r) { rowClearing = true; break; }
+    if (rowClearing && flashPhase) continue;
+
+    for (int c = 0; c < TET_COLS; c++) {
+      if (!tetBoard[r][c]) continue;
+      display.fillRect(TET_FIELD_X + c * TET_BLOCK, TET_FIELD_Y + r * TET_BLOCK,
+                        TET_BLOCK, TET_BLOCK, SSD1306_WHITE);
+    }
+  }
+
+  if (tetState == TETST_PLAYING) {
+    uint16_t shape = TET_PIECES[tetPieceType][tetPieceRot];
+    for (int r = 0; r < 4; r++) {
+      for (int c = 0; c < 4; c++) {
+        if (!tetCellSet(shape, r, c)) continue;
+        int bx = tetPieceX + c, by = tetPieceY + r;
+        if (by < 0 || by >= TET_ROWS || bx < 0 || bx >= TET_COLS) continue;
+        display.fillRect(TET_FIELD_X + bx * TET_BLOCK, TET_FIELD_Y + by * TET_BLOCK,
+                          TET_BLOCK, TET_BLOCK, SSD1306_WHITE);
+      }
+    }
+  }
+}
+
+void tetDrawPanel() {
+  char buf[16];
+  display.setTextSize(1);
+  display.setCursor(36, 0);
+  display.print(F("NEXT"));
+  display.drawRect(34, 8, 22, 22, SSD1306_WHITE);
+  tetDrawPreview(tetNextType);
+
+  display.setCursor(60, 8);
+  display.print(F("SCORE"));
+  snprintf(buf, sizeof(buf), "%lu", (unsigned long)tetScore);
+  int w = (int)strlen(buf) * 12;
+  int sx = SCREEN_W - w;
+  if (sx < 58) sx = 58;
+  display.setTextSize(2);
+  display.setCursor(sx, 18);
+  display.print(buf);
+
+  display.setTextSize(1);
+  display.setCursor(60, 36);
+  display.print(F("LEVEL"));
+  snprintf(buf, sizeof(buf), "%u", (unsigned)tetLevel);
+  display.setTextSize(2);
+  display.setCursor(60, 46);
+  display.print(buf);
+}
+
+void tetDrawGameOver() {
+  char buf[24];
+  display.setTextSize(2);
+  display.setCursor(10, 8);
+  display.print(F("GAME OVER"));
+  display.setTextSize(1);
+  snprintf(buf, sizeof(buf), "SCORE %lu", (unsigned long)tetScore);
+  int x = (SCREEN_W - (int)strlen(buf) * 6) / 2;
+  if (x < 0) x = 0;
+  display.setCursor(x, 34);
+  display.print(buf);
+  display.setCursor(16, 48);
+  display.print(F("UP:Restart BACK:Exit"));
+}
+
+void tetRender() {
+  clearDisp();
+  if (tetState == TETST_GAMEOVER) tetDrawGameOver();
+  else { tetDrawField(); tetDrawPanel(); }
+  display.display();
+  tetDirty = false;
+}
+
+void runTetris() {
+  tetResetGame();
+
+  unsigned long lastLeftRepeat = 0, lastRightRepeat = 0, lastDownRepeat = 0;
+  bool leftHeldPrev = false, rightHeldPrev = false, downHeldPrev = false;
+  bool upHeldPrev = false, selHeldPrev = false;
+
+  while (true) {
+    uint32_t now = millis();
+    updateButtons();
+
+    // ---- BACK (long SELECT) always exits ----
+    if (btn[4].longFired) { btn[4].longFired = false; return; }
+
+    bool leftHeld  = (btn[2].stable == LOW);
+    bool rightHeld = (btn[3].stable == LOW);
+    bool downHeld  = (btn[1].stable == LOW);
+    bool upHeld    = (btn[0].stable == LOW);
+    bool selHeld   = (btn[4].stable == LOW);
+
+    bool upEdge  = upHeld  && !upHeldPrev;
+    bool selEdge = selHeld && !selHeldPrev;
+    upHeldPrev = upHeld;
+    selHeldPrev = selHeld;
+
+    if (tetState == TETST_GAMEOVER) {
+      if (upEdge || selEdge) { tetResetGame(); }
+      if (tetDirty) tetRender();
+      delay(20);
+      continue;
+    }
+
+    if (tetState == TETST_PLAYING) {
+      if (upEdge) { tetRotatePiece(); tetDirty = true; }
+
+      // Left auto-repeat
+      if (leftHeld) {
+        bool fire = false;
+        if (!leftHeldPrev) { fire = true; lastLeftRepeat = now + TET_REPEAT_DELAY_MS; }
+        else if ((int32_t)(now - lastLeftRepeat) >= 0) { fire = true; lastLeftRepeat = now + TET_REPEAT_RATE_MS; }
+        if (fire && !tetCollides(tetPieceType, tetPieceRot, tetPieceX - 1, tetPieceY)) {
+          tetPieceX--; tetDirty = true;
+        }
+      }
+      leftHeldPrev = leftHeld;
+
+      // Right auto-repeat
+      if (rightHeld) {
+        bool fire = false;
+        if (!rightHeldPrev) { fire = true; lastRightRepeat = now + TET_REPEAT_DELAY_MS; }
+        else if ((int32_t)(now - lastRightRepeat) >= 0) { fire = true; lastRightRepeat = now + TET_REPEAT_RATE_MS; }
+        if (fire && !tetCollides(tetPieceType, tetPieceRot, tetPieceX + 1, tetPieceY)) {
+          tetPieceX++; tetDirty = true;
+        }
+      }
+      rightHeldPrev = rightHeld;
+
+      // Soft drop auto-repeat
+      if (downHeld) {
+        bool fire = false;
+        if (!downHeldPrev) { fire = true; lastDownRepeat = now + TET_REPEAT_DELAY_MS; }
+        else if ((int32_t)(now - lastDownRepeat) >= 0) { fire = true; lastDownRepeat = now + TET_REPEAT_RATE_MS; }
+        if (fire) {
+          if (!tetCollides(tetPieceType, tetPieceRot, tetPieceX, tetPieceY + 1)) {
+            tetPieceY++; tetScore += 1;
+          } else {
+            tetLockPiece();
+          }
+          tetDirty = true;
+        }
+      }
+      downHeldPrev = downHeld;
+
+      // Hard drop
+      if (selEdge) { tetHardDrop(); tetDirty = true; }
+
+      // Gravity
+      if (tetState == TETST_PLAYING && (now - tetDropTimer >= tetDropInterval)) {
+        tetDropTimer = now;
+        if (!tetCollides(tetPieceType, tetPieceRot, tetPieceX, tetPieceY + 1)) {
+          tetPieceY++;
+        } else {
+          tetLockPiece();
+        }
+        tetDirty = true;
+      }
+    }
+    else if (tetState == TETST_CLEARING) {
+      if (now - tetClearStart >= TET_CLEAR_MS) {
+        uint8_t n = tetClearCount;
+        tetRemoveClearedRows();
+        tetApplyScore(n);
+        tetSpawnPiece();
+        tetDirty = true;
+      } else if (now - tetFlashTimer >= TET_FLASH_MS) {
+        tetFlashTimer = now;
+        tetDirty = true;
+      }
+    }
+
+    if (tetDirty) tetRender();
+    delay(8);
+  }
+}
+
+// ============================================================
+//  APPS DISPATCHER
+// ============================================================
+const char* APPS_ITEMS[] = {"Vault", "Profile", "Life", "Screensaver", "Timer", "Sleep"};
+#define APPS_COUNT ARR_LEN(APPS_ITEMS)
+
+void runAppsMenu() {
+  int r = runMenu("APPS", APPS_ITEMS, APPS_COUNT, 0);
+  if (r == -1) return;
+  switch (r) {
+    case 0: runVault();       break;
+    case 1: runProfile();     break;
+    case 2: runLife();        break;
+    case 3: runScreensaver(); break;
+    case 4: runTimer();       break; // defined below
+    case 5: runSleepMode();   break; // defined below
+  }
+}
+
+// ============================================================
+//  GAMES DISPATCHER
+// ============================================================
+const char* GAMES_ITEMS[] = {"Dino Runner", "Tetris"};
+#define GAMES_COUNT ARR_LEN(GAMES_ITEMS)
+
+void runGamesMenu() {
+  int r = runMenu("GAMES", GAMES_ITEMS, GAMES_COUNT, 0);
+  if (r == -1) return;
+  switch (r) {
+    case 0: runDino();   break;
+    case 1: runTetris(); break;
+  }
+}
+
+// ============================================================
+//  TIMER
+// ============================================================
+uint16_t TIMER_PRESETS[] = {300, 900, 1500, 2700, 3600};
+const char* TIMER_NAMES[] = {"5m Break","15m Quick","25m Study","45m Lecture","60m Exam"};
+#define TIMER_COUNT ARR_LEN(TIMER_PRESETS)
+
+void runTimer() {
+  int presetIdx = 2;
+  while (true) {
+    clearDisp();
+    drawMiniHeader("TIMER");
+    display.setCursor(10, 22);
+    display.print(TIMER_NAMES[presetIdx]);
+    display.setTextSize(2);
+    display.setCursor(44, 36);
+    display.print(TIMER_PRESETS[presetIdx] / 60);
+    display.setTextSize(1);
+    display.setCursor(76, 42);
+    display.print("min");
+    display.display();
+
+    Act a = getAction();
+    if (a == A_UP)   presetIdx = (presetIdx + 1) % TIMER_COUNT;
+    if (a == A_DOWN) presetIdx = (presetIdx - 1 + TIMER_COUNT) % TIMER_COUNT;
+    if (a == A_BACK) return;
+    if (a == A_SELECT) {
+      uint32_t total = TIMER_PRESETS[presetIdx];
+      uint32_t rem = total;
+      unsigned long tick = millis();
+      while (rem > 0) {
+        Act a2 = getAction();
+        if (a2 == A_BACK) return;
+        if (millis() - tick >= 1000) { tick = millis(); rem--; }
+
+        clearDisp();
+        drawMiniHeader("TIMER");
+        display.setTextSize(2);
+        display.setCursor(38, 18);
+        int m = rem / 60, s = rem % 60;
+        if (m < 10) display.print('0'); display.print(m);
+        display.print(':');
+        if (s < 10) display.print('0'); display.print(s);
+
+        int cx = 64, cy = 48, radius = 10;
+        display.drawCircle(cx, cy, radius, SSD1306_WHITE);
+        float progress = (float)rem / total;
+        float endAngle = -PI / 2 + progress * 2 * PI;
+        float angle = -PI / 2;
+        while (angle < endAngle) {
+          display.drawPixel(cx + cos(angle) * radius, cy + sin(angle) * radius, SSD1306_WHITE);
+          display.drawPixel(cx + cos(angle) * (radius - 1), cy + sin(angle) * (radius - 1), SSD1306_WHITE);
+          angle += 0.15f;
+        }
+        display.display();
+        delay(30);
+      }
+      for (int i = 0; i < 6; i++) {
+        display.invertDisplay(true); delay(200);
+        display.invertDisplay(false); delay(200);
+      }
+      clearDisp();
+      display.setTextSize(2);
+      display.setCursor(14, 26);
+      display.print(F("TIME UP"));
+      display.display();
+      delay(1500);
+    }
+    delay(30);
+  }
+}
+
+// ============================================================
+//  SETTINGS SCREENS
+// ============================================================
+void setBrightnessScreen() {
+  const char* lvls[] = {"25%","50%","75%","100%"};
+  while (true) {
+    clearDisp();
+    drawMiniHeader("Brightness");
+    for (int i = 0; i < (int)ARR_LEN(lvls); i++) {
+      int y = 18 + i * 9;
+      if (i == cfg.brightness) {
+        display.fillRect(0, y - 1, 100, 9, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      }
+      display.setCursor(6, y);
+      display.print(lvls[i]);
+      display.setTextColor(SSD1306_WHITE);
+    }
+    display.display();
+    Act a = getAction();
+    bool changed = false;
+    if (a == A_UP)    { cfg.brightness = (cfg.brightness - 1 + ARR_LEN(lvls)) % ARR_LEN(lvls); changed = true; }
+    if (a == A_DOWN)  { cfg.brightness = (cfg.brightness + 1) % ARR_LEN(lvls); changed = true; }
+    if (changed) applyBrightness();
+    if (a == A_SELECT) { saveCfg(); return; }
+    if (a == A_BACK) { saveCfg(); return; }
+    delay(30);
+  }
+}
+
+void setTimeoutScreen() {
+  uint32_t TO[] = {5000, 10000, 20000, 30000, 60000, 0};
+  const char* TN[] = {"5s","10s","20s","30s","60s","Never"};
+  int count = ARR_LEN(TO);
+  int sel = 0;
+  for (int i = 0; i < count; i++) if (TO[i] == cfg.menuTimeoutMs) sel = i;
+  while (true) {
+    clearDisp();
+    drawMiniHeader("Timeout");
+    for (int i = 0; i < count; i++) {
+      int y = 14 + i * 7;
+      if (i == sel) {
+        display.fillRect(0, y - 1, 100, 7, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      }
+      display.setCursor(6, y);
+      display.print(TN[i]);
+      display.setTextColor(SSD1306_WHITE);
+    }
+    display.display();
+    Act a = getAction();
+    if (a == A_UP)   sel = (sel - 1 + count) % count;
+    if (a == A_DOWN) sel = (sel + 1) % count;
+    if (a == A_SELECT) { cfg.menuTimeoutMs = TO[sel]; saveCfg(); return; }
+    if (a == A_BACK) return;
+    delay(30);
+  }
+}
+
+void setWallpaperScreen() {
+  while (true) {
+    clearDisp();
+    drawMiniHeader("Wallpaper");
+    display.setCursor(0, 20);
+    display.print(F("Boot wallpaper:"));
+    display.setTextSize(2);
+    display.setCursor(20, 34);
+    display.print(cfg.wallpaperOnBoot ? F("ON") : F("OFF"));
+    display.setTextSize(1);
+    display.display();
+    Act a = getAction();
+    if (a == A_UP || a == A_DOWN) cfg.wallpaperOnBoot = !cfg.wallpaperOnBoot;
+    if (a == A_SELECT) {
+      saveCfg();
+      display.clearDisplay();
+      display.drawBitmap(0, 0, WALLPAPER_BMP, 128, 64, SSD1306_WHITE);
+      display.display();
+      while (getAction() == A_NONE) delay(30);
+    }
+    if (a == A_BACK) { saveCfg(); return; }
+    delay(30);
+  }
+}
+
+void setScreenFlipScreen() {
+  while (true) {
+    clearDisp();
+    drawMiniHeader("Screen Flip");
+    display.setCursor(0, 22);
+    display.print(F("Flip 180:"));
+    display.setTextSize(2);
+    display.setCursor(20, 34);
+    display.print(cfg.screenFlip ? F("ON") : F("OFF"));
+    display.setTextSize(1);
+    display.display();
+    Act a = getAction();
+    if (a == A_SELECT) { cfg.screenFlip = !cfg.screenFlip; applyScreenFlip(); saveCfg(); }
+    if (a == A_BACK) { saveCfg(); return; }
+    delay(30);
+  }
+}
+
+void resetAllScreen() {
+  clearDisp(); drawMiniHeader("Reset All");
+  display.setCursor(4, 20); display.println(F("Hold SELECT 3s"));
+  display.setCursor(4, 32); display.println(F("to confirm"));
+  display.setCursor(4, 48); display.println(F("LEFT: Cancel"));
+  display.display();
+
+  unsigned long holdStart = 0;
+  bool holding = false;
+  while (true) {
+    bool selDown  = (digitalRead(BTN_SELECT) == LOW);
+    bool leftDown = (digitalRead(BTN_LEFT) == LOW);
+    if (leftDown) return;
+
+    if (selDown) {
+      if (!holding) { holding = true; holdStart = millis(); }
+      unsigned long held = millis() - holdStart;
+      clearDisp(); drawMiniHeader("Reset All");
+      display.setCursor(4, 20); display.println(F("Keep holding..."));
+      int w = constrain((int)map(held, 0, 3000, 0, 116), 0, 116);
+      display.drawRect(6, 40, 116, 10, SSD1306_WHITE);
+      display.fillRect(8, 42, w, 6, SSD1306_WHITE);
+      display.display();
+      if (held >= 3000) {
+        prefs.begin("neon", false); prefs.clear(); prefs.end();
+        prefs.begin("trex", false); prefs.clear(); prefs.end();
+        clearDisp();
+        display.setTextSize(2);
+        display.setCursor(10, 26);
+        display.print(F("DONE"));
+        display.display();
+        delay(2000);
+        ESP.restart();
+      }
+    } else {
+      holding = false;
+    }
+    delay(20);
+  }
+}
+
+void aboutScreen() {
+  clearDisp();
+  drawMiniHeader("About");
+  display.setCursor(2, 18); display.println(F("NEON OS v3.0"));
+  display.setCursor(2, 30); display.println(F("Apps - Games - Settings"));
+  display.setCursor(2, 42); display.println(F("13 quotes - 2 games"));
+  display.display();
+  while (getAction() != A_BACK) delay(50);
+}
+
+// ============================================================
+//  SETTINGS DISPATCHER
+// ============================================================
+const char* SETTINGS_ITEMS[] = {"Brightness","Timeout","Wallpaper","Screen Flip","Reset All","About"};
+#define SET_COUNT ARR_LEN(SETTINGS_ITEMS)
+
+void runSettings() {
+  int r = runMenu("SETTINGS", SETTINGS_ITEMS, SET_COUNT, 0);
+  if (r == -1) return;
+  switch (r) {
+    case 0: setBrightnessScreen();  break;
+    case 1: setTimeoutScreen();     break;
+    case 2: setWallpaperScreen();   break;
+    case 3: setScreenFlipScreen();  break;
+    case 4: resetAllScreen();       break;
+    case 5: aboutScreen();          break;
+  }
+}
+
+// ============================================================
+//  SLEEP + IDLE
+// ============================================================
+void runSleepMode() {
+  for (int i = 0; i < 3; i++) {
+    display.invertDisplay(true); delay(30);
+    display.invertDisplay(false); delay(30);
+  }
+  clearDisp();
+  display.display();
+  display.ssd1306_command(SSD1306_DISPLAYOFF);
+  while (getAction() == A_NONE) delay(50);
+  display.ssd1306_command(SSD1306_DISPLAYON);
+  applyBrightness();
+}
+
+void checkIdleSleep() {
+  if (cfg.menuTimeoutMs > 0 && (millis() - lastActivity) > cfg.menuTimeoutMs) {
+    runSleepMode();
+    lastActivity = millis();
+  }
+}
+
+// ============================================================
+//  SETUP
+// ============================================================
+void setup() {
+  Serial.begin(115200);
+  for (int i = 0; i < 5; i++) pinMode(BTN_PINS[i], INPUT_PULLUP);
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println("OLED FAILED");
+    while (true) delay(1000);
+  }
+  display.cp437(true);
+  display.clearDisplay(); display.display();
+
+  loadCfg();
+  applyBrightness();
+  applyScreenFlip();
+
+  randomSeed(esp_random());
+
+  runBootScreen();
+
+  if (cfg.wallpaperOnBoot) {
+    display.clearDisplay();
+    display.drawBitmap(0, 0, WALLPAPER_BMP, 128, 64, SSD1306_WHITE);
+    display.display();
+    delay(1000);
+  }
+
+  homeSel = 0;
+  lastActivity = millis();
+}
+
+// ============================================================
+//  MAIN LOOP
+// ============================================================
+void loop() {
+  Act a = getAction();
+
+  renderHome();
+  checkIdleSleep();
+
+  if (a == A_RIGHT) homeSel = (homeSel + 1) % HOME_COUNT;
+  if (a == A_LEFT)  homeSel = (homeSel - 1 + HOME_COUNT) % HOME_COUNT;
+  if (a == A_SELECT) {
+    switch (homeSel) {
+      case 0: runAppsMenu();  break;
+      case 1: runGamesMenu(); break;
+      case 2: runSettings();  break;
+    }
+  }
+  delay(15);
+}
